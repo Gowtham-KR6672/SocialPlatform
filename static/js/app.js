@@ -253,6 +253,7 @@ function renderLanding(){
       <span class="sphere s1"></span><span class="sphere s2"></span><span class="sphere s3"></span>
       ${COSMIC_GEM_SVG}${COSMIC_CUBE_SVG}${COSMIC_CUBE2_SVG}
       <div class="auth-inner">
+        <img class="auth-logo" src="/static/img/logo.png" alt="Social Platform logo" width="168" height="124">
         <h1 class="auth-title"><span class="grad-a">Social</span> <span class="grad-b">Platform</span></h1>
         <p class="auth-sub">Plan, produce &amp; schedule your social content.</p>
         <div class="auth-grid solo">
@@ -654,7 +655,7 @@ async function openSetup(){
         (live progress, size &amp; speed shown below) and launch it automatically, or use the link for a
         manual download. Installs keep running in the background — you can close this window; press
         <b>Cancel</b> to stop one.</p>
-      <div id="toolList">Loading…</div>
+      <div id="toolList"><div class="loading sm">Loading…</div></div>
     </div>
     <div class="modal-foot"><button class="btn ghost" onclick="closeModal()">Close</button></div>
   </div>`);

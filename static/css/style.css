@@ -2047,3 +2047,32 @@ body[data-theme="cosmic"] #setupBody > .setup-card{margin-bottom:28px}
 .ai-test-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0 14px}
 .ai-paidwarn{display:flex;align-items:flex-start;gap:6px;margin-top:6px;padding:7px 10px;border-radius:9px;background:var(--gold-soft);color:var(--gold-ink);font-size:12px;font-weight:600}
 .vdesc-sm{font-size:12.5px;color:var(--ink-2);margin:4px 0 6px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+
+/* ============================================================
+   Brand logo + loading animation (logo inside a spinning gradient ring)
+   ============================================================ */
+.topbar .brand-logo{height:40px;width:auto;display:block;filter:drop-shadow(0 4px 10px rgba(108,71,255,.18))}
+.auth-logo{display:block;width:168px;height:auto;margin:0 auto 6px;filter:drop-shadow(0 16px 30px rgba(108,71,255,.22))}
+@media(max-width:700px){.topbar .brand-logo{height:34px}.auth-logo{width:120px}}
+
+.loading{position:relative;display:flex !important;align-items:center;justify-content:center;
+  min-height:140px;padding:0 !important;margin:0 auto;font-size:0 !important;color:transparent !important;overflow:hidden}
+.loading::before{content:"";width:62px;height:62px;border-radius:50%;flex-shrink:0;
+  background:conic-gradient(from 0deg,rgba(108,71,255,0) 0deg,rgba(108,71,255,.15) 90deg,#6c47ff 250deg,#2f80ff 350deg,rgba(47,128,255,0) 360deg);
+  -webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 4px),#000 calc(100% - 3.5px));
+          mask:radial-gradient(farthest-side,transparent calc(100% - 4px),#000 calc(100% - 3.5px));
+  animation:ldSpin .95s linear infinite}
+.loading::after{content:"";position:absolute;left:50%;top:50%;width:34px;height:34px;margin:-17px 0 0 -17px;
+  background:url(/static/img/logo-160.png) center/contain no-repeat;animation:ldPulse 1.6s ease-in-out infinite}
+.loading.sm{min-height:70px}
+.loading.sm::before{width:38px;height:38px}
+.loading.sm::after{width:20px;height:20px;margin:-10px 0 0 -10px}
+.loading.lg{min-height:0}
+.loading.lg::before{width:96px;height:96px;
+  -webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 5px),#000 calc(100% - 4.5px));
+          mask:radial-gradient(farthest-side,transparent calc(100% - 5px),#000 calc(100% - 4.5px))}
+.loading.lg::after{width:54px;height:54px;margin:-27px 0 0 -27px}
+@keyframes ldSpin{to{transform:rotate(360deg)}}
+@keyframes ldPulse{0%,100%{transform:scale(.9);opacity:.8}50%{transform:scale(1.04);opacity:1}}
+@media (prefers-reduced-motion: reduce){.loading::before{animation-duration:2.6s}.loading::after{animation:none}}
+.app-splash{min-height:calc(100vh - 68px);display:flex;align-items:center;justify-content:center}

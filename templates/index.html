@@ -4,13 +4,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Social Platform</title>
+  <link rel="icon" type="image/png" sizes="64x64" href="/static/img/favicon-64.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/img/favicon-32.png">
+  <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png">
   <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
 
   <!-- ===== Top bar ===== (brand hidden on the login page via JS) -->
   <div class="topbar">
-    <div class="logo" id="brand"><span class="mark">SP</span>
+    <div class="logo" id="brand"><img class="brand-logo" src="/static/img/logo-160.png" alt="" width="54" height="40">
       <span class="logo-txt">Social Platform</span></div>
     <div class="top-search hidden" id="topSearch"></div>
     <div class="spacer"></div>
@@ -23,7 +26,7 @@
   </div>
 
   <!-- ===== Main view (landing OR dashboard) ===== -->
-  <div id="view"></div>
+  <div id="view"><div class="app-splash" role="status" aria-label="Loading"><div class="loading lg">Loading…</div></div></div>
 
   <!-- mounts -->
   <div id="modal-root"></div>

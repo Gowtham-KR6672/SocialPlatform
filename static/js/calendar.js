@@ -58,7 +58,7 @@ async function renderCalendar(){
         <span class="legend-tip">${ic('info',13)} Drag a post to another day to reschedule it</span>
       </div>
      </div>
-     <div class="pub-status" id="pubStatus"><h4>${ic('send',15)} Publishing status</h4><div id="pubStatusList" class="sub">Loading…</div></div>
+     <div class="pub-status" id="pubStatus"><h4>${ic('send',15)} Publishing status</h4><div id="pubStatusList" class="sub"><div class="loading sm">Loading…</div></div></div>
     </div>`;
   $('#calPrev').onclick = ()=>shiftMonth(-1);
   $('#calNext').onclick = ()=>shiftMonth(1);
