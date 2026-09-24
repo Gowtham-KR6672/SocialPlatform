@@ -5014,12 +5014,26 @@ def _chat_request(provider, key, url, hdr, body, see):
     """Send an OpenAI-style chat request with the recoveries users actually hit:
     a text-only model given images (switch to one that reads images), low OpenRouter
     credit on a paid model (shorter reply), and busy free models (clear advice)."""
-    switched = False
-    for _ in range(3):
+    switched, busy_switches = False, 0
+    tried = {body.get("model")} | set(body.get("models") or [])
+    for _ in range(9):
         try:
             return _ai_request(url, hdr, body)
         except RuntimeError as e:
             msg = str(e)
+            if msg.startswith("HTTP 429") and busy_switches < 5:
+                # rate-limited: switch to other models (that read images, for video analysis)
+                alts = [m for m in _ranked_models(provider, key, vision=see) if m not in tried
+                        and not (provider == "openrouter" and m == AI_PROVIDERS[provider]["default"])]
+                if alts:
+                    busy_switches += 1
+                    body["model"] = alts[0]
+                    if provider == "openrouter":
+                        body["models"] = alts[:3]
+                        tried.update(alts[:3])
+                    else:
+                        tried.add(alts[0])
+                    continue
             if see and not switched and re.match(r"HTTP (400|404)", msg) and re.search(r"image|vision|multimodal", msg, re.I):
                 switched = True
                 vis = [m for m in _auto_models(provider, key, vision=True)       # ("a free model" is a label, not an id)
@@ -5042,9 +5056,9 @@ def _chat_request(provider, key, url, hdr, body, see):
                                    "Clear the Model box (automatic free models) or pick one ending in “:free”, "
                                    "or add credit on OpenRouter.") from None
             if provider == "openrouter" and msg.startswith("HTTP 429"):
-                raise RuntimeError(f"{msg}. Free OpenRouter models are shared and often busy — wait a minute and try "
-                                   "again, or pick a different model ending in “:free” (Load models). Accounts "
-                                   "without credit also get only a small number of free requests per day.") from None
+                raise RuntimeError(f"{msg}. All {len(tried)} free models tried were busy. Wait a minute and try again, "
+                                   "or use Google Gemini (its free limit is your own). Accounts without credit also get "
+                                   "only a small number of free requests per day.") from None
             if provider == "groq" and msg.startswith("HTTP 429"):
                 raise RuntimeError(f"{msg}. Groq's free plan has per-minute and per-day limits — wait and try again.") from None
             raise
@@ -5064,12 +5078,24 @@ def _ai_complete(provider, key, model, text, images=(), max_tokens=None, video=N
         parts = [{"inline_data": {"mime_type": "image/jpeg", "data": b}} for b in imgs] + [{"text": text}]
         if video:
             parts.insert(0, {"inline_data": {"mime_type": video[1], "data": base64.b64encode(video[0]).decode()}})
-        resp = _ai_request(
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{urllib.parse.quote(name, safe='-._')}:generateContent",
-            {"x-goog-api-key": key},
-            {"contents": [{"role": "user", "parts": parts}],
-             "generationConfig": {"maxOutputTokens": max_tokens or 8192}})
+        payload = {"contents": [{"role": "user", "parts": parts}],
+                   "generationConfig": {"maxOutputTokens": max_tokens or 8192}}
+        names, tried = [name], {name}
+        while True:
+            try:
+                resp = _ai_request("https://generativelanguage.googleapis.com/v1beta/models/"
+                                   f"{urllib.parse.quote(names[-1], safe='-._')}:generateContent",
+                                   {"x-goog-api-key": key}, payload)
+                break
+            except RuntimeError as e:
+                if not str(e).startswith("HTTP 429"):
+                    raise
+                alts = [m for m in _ranked_models("gemini", key) if m not in tried]
+                if len(names) >= 4 or not alts:
+                    raise RuntimeError(f"{e}. Gemini's free limit is used up on {len(names)} model(s) — "
+                                       "wait a little (limits reset every minute and every day).") from None
+                names.append(alts[0])
+                tried.add(alts[0])
         cands = resp.get("candidates") or []
         if not cands:
             why = (resp.get("promptFeedback") or {}).get("blockReason")
@@ -5164,7 +5190,7 @@ def _auto_models(p, key, vision=False):
     ck = p + (":vision" if vision else "")
     hit = _AI_MODEL_CACHE.get(ck)
     if hit and time.time() - hit[0] < 6 * 3600:
-        return hit[2]
+        return hit[2][:3]
     if vision and p == "groq":
         default = "meta-llama/llama-4-scout-17b-16e-instruct"
     models = _cached_models(p, key)
@@ -5176,9 +5202,17 @@ def _auto_models(p, key, vision=False):
     for rx in AI_MODEL_PREFS[p]:
         ranked += [i for i in ids if re.search(rx, i) and i not in ranked]
     ranked = ([default] if default in ids else []) + [i for i in ranked if i != default]
-    picks = ranked[:3] or ids[:3] or [default]
+    ranked += [i for i in ids if i not in ranked]          # everything else, as backups
+    picks = ranked or [default]
     _AI_MODEL_CACHE[ck] = (time.time(), picks[0], picks)
-    return picks
+    return picks[:3]
+
+
+def _ranked_models(p, key, vision=False):
+    """Every usable model for a provider, best first (vision=True: only ones that read images)."""
+    _auto_models(p, key, vision)
+    hit = _AI_MODEL_CACHE.get(p + (":vision" if vision else ""))
+    return list(hit[2]) if hit else []
 
 
 def _claude_generate(prompt, api_key, model, provider=None):
