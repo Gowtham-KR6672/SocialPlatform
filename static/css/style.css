@@ -1615,3 +1615,5 @@ body[data-theme="cosmic"] #notifFeed .notif{background:transparent !important}
 /* not-connected platforms in pickers */
 .pp.off{border-style:dashed}
 .pp.off .pico{filter:grayscale(1);opacity:.7}
+
+.empty-state .sub{margin:0 auto;max-width:520px}

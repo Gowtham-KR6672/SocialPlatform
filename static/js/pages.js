@@ -162,9 +162,15 @@ async function renderInbox(){
   let d; try{ d = await api('/api/inbox'+(qs?'?'+qs:'')); }catch(e){ $('#ibBody').innerHTML=`<div class="err">${esc(e.message)}</div>`; return; }
   if(typeof loadInboxBadge==='function') loadInboxBadge();
   const body = $('#ibBody');
-  if(!d.comments.length){ body.innerHTML = `<div class="empty-state">${ic('inbox',34)}<h3>Inbox zero</h3><p class="sub">No comments match these filters.</p></div>`; return; }
+  const hid = Object.entries(d.hidden||{});
+  const hiddenNote = hid.length ? `<div class="note warn-note">${ic('info',14)} <div>
+      ${hid.map(([p,n])=>`${pi(p,14)} <b>${esc(platLabel(p))}</b> reports <b>${n}</b> more comment(s) than it lets the app read.`).join('<br>')}
+      <div class="muted" style="margin-top:4px">While a Meta app is in <b>Development mode</b>, the API only returns comments written by
+      people with a role on the app (e.g. Instagram Testers). After the app is <b>Live</b> with App Review approved for
+      comment access, every comment appears here.</div></div></div>` : '';
+  if(!d.comments.length){ body.innerHTML = hiddenNote + `<div class="empty-state">${ic('inbox',34)}<h3>Inbox zero</h3><p class="sub">No comments match these filters. Click <b>Sync</b> to fetch the latest.</p></div>`; return; }
   const sentChip = s => s==='negative' ? `<span class="chip danger">${ic('alert',11)} Negative</span>` : s==='positive' ? `<span class="chip completed">${ic('heart',11)} Positive</span>` : `<span class="chip draft">Neutral</span>`;
-  body.innerHTML = d.comments.map(cm=>`<div class="ib-item ${cm.sentiment==='negative'?'neg':''}" data-id="${cm.id}">
+  body.innerHTML = hiddenNote + d.comments.map(cm=>`<div class="ib-item ${cm.sentiment==='negative'?'neg':''}" data-id="${cm.id}">
       <div class="ib-head">${pi(cm.platform,18)} <b>${esc(cm.author||'someone')}</b> ${sentChip(cm.sentiment)}
         <span class="muted">on “${esc(cm.post_title||'post')}” · ${fmtTime((cm.created_at||'').replace('Z','').slice(0,19))}</span>
         ${cm.permalink?`<a href="${esc(cm.permalink)}" target="_blank" rel="noopener" class="muted">${ic('external',13)}</a>`:''}</div>

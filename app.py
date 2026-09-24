@@ -7214,7 +7214,16 @@ def api_inbox():
     counts = {r["status"]: r["n"] for r in db.execute(
         "SELECT status, COUNT(*) AS n FROM inbox_comments GROUP BY status").fetchall()}
     neg = db.execute("SELECT COUNT(*) FROM inbox_comments WHERE sentiment='negative' AND status='new'").fetchone()[0]
-    return jsonify({"comments": rows, "counts": counts, "negative_new": neg})
+    # Comments the platform counts but won't return to the app (e.g. Meta apps in
+    # Development mode only expose comments written by app testers).
+    hidden = {}
+    for t in db.execute("SELECT t.id, t.platform, t.comments, "
+                        "(SELECT COUNT(*) FROM inbox_comments i WHERE i.target_id=t.id) AS got "
+                        "FROM post_targets t WHERE t.status='published' AND t.simulated=0").fetchall():
+        gap = (t["comments"] or 0) - (t["got"] or 0)
+        if gap > 0:
+            hidden[t["platform"]] = hidden.get(t["platform"], 0) + gap
+    return jsonify({"comments": rows, "counts": counts, "negative_new": neg, "hidden": hidden})
 
 
 @app.route("/api/inbox/sync", methods=["POST"])
@@ -7228,11 +7237,12 @@ def api_inbox_sync():
         acct = _publish_account(db, row, t["platform"]) if row else None
         if not acct or acct.get("mode") != "live":
             continue
+        before = db.execute("SELECT COUNT(*) FROM inbox_comments WHERE target_id=?", (t["id"],)).fetchone()[0]
         try:
-            acct = _ensure_fresh(db, acct)
-            new += _ingest_comments(db, t, row, P.comments(t["platform"], acct, t["remote_id"]))
+            refresh_target_stats(db, t)          # updates counts AND pulls the comments
         except Exception:
             pass
+        new += db.execute("SELECT COUNT(*) FROM inbox_comments WHERE target_id=?", (t["id"],)).fetchone()[0] - before
     return jsonify({"ok": True, "new": new})
 
 
