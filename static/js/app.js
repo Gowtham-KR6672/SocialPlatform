@@ -82,20 +82,20 @@ window.roleLabel = roleLabel; window.nameWithRole = nameWithRole;
 // Connect/Access/Logins/List-of-Users panels have been removed; social
 // connections now live in the new "Setup" panel.
 const NAV_TABS = [
-  {key:'input',    label:'Input',           ic:'board',     group:'Workspace', badge:'navProdCount'},
+  {key:'input',    label:'Input',           ic:'video',     group:'Workspace', badge:'navProdCount'},
   {key:'calendar', label:'Calendar',        ic:'calendar',  group:'Workspace', badge:'navCalRed'},
   {key:'queue',    label:'Queue',           ic:'clock',     group:'Workspace'},
   {key:'published',label:'Published',       ic:'send',      group:'Workspace', badge:'navPubCount'},
-  {key:'analytics',label:'Analytics',       ic:'analytics', group:'Workspace'},
-  {key:'inbox',    label:'Inbox',           ic:'inbox',     group:'Workspace', badge:'navInboxCount'},
+  {key:'analytics',label:'Analytics',       ic:'bars', group:'Workspace'},
+  {key:'inbox',    label:'Inbox',           ic:'mail',     group:'Workspace', badge:'navInboxCount'},
   {key:'content',  label:'Content Writing', ic:'pen',       group:'Workspace'},
   {key:'library',  label:'Library',         ic:'folder',    group:'Workspace'},
   {key:'bio',      label:'Link in bio',     ic:'globe',     group:'Workspace'},
-  {key:'reports',  label:'Reports',         ic:'bars',      group:'Workspace'},
+  {key:'reports',  label:'Reports',         ic:'fileText',      group:'Workspace'},
   {key:'team',     label:'Team & Brands',   ic:'users',     group:'Account'},
   {key:'activity', label:'Activity Log',    ic:'activity',  group:'Account'},
   {key:'notifications', label:'Notifications', ic:'bell',  group:'Account', unread:'unread-notifications'},
-  {key:'setup',    label:'Setup',           ic:'link',      group:'Account'},
+  {key:'setup',    label:'Setup',           ic:'gear',      group:'Account'},
 ];
 // V31 tabs are open to every logged-in user (data inside is still scoped per role)
 const ALWAYS_TABS = ['setup','queue','analytics','inbox','team','activity','notifications','library','bio'];
@@ -153,13 +153,15 @@ function renderTopbar(){
     const bell = el(`<button class="icon-btn notif-wrap" id="bellBtn" title="Notifications">${ic('bell',18)}<span class="bell-dot hidden" id="bellCount">0</span></button>`);
     bell.onclick = ()=>{ App.page='notifications'; renderDashboard(App.readonly); };
     box.appendChild(bell);
-    const pill = el(`<button class="pill" id="userPill" title="Edit profile">${ic('user',15)} ${esc(App.user.name_with_role || nameWithRole(App.user))} ${ic('chevDown',14)}</button>`);
+    const pill = el(`<button class="pill user-pill" id="userPill" title="My profile"><span class="avatar">${esc(initials(App.user))}</span>
+        <span class="up-name">${esc(App.user.name_with_role || nameWithRole(App.user))}</span> ${ic('chevDown',15)}</button>`);
     box.appendChild(pill);
     pill.onclick = openProfile;
-    box.appendChild(btn(`${ic('logout',15)} Log out`,'ghost onnavy sm', doLogout));
+    box.appendChild(btn(`${ic('logout',16)} Log out`,'ghost onnavy sm logout-btn', doLogout));
     if(typeof startNotifPolling==='function') startNotifPolling();
   }
   // logged-out: header stays clean (no buttons) — actions live on the login page
+  if(typeof initTopSearch==='function') initTopSearch();
 }
 /* Brand / workspace switcher — filters the calendar, analytics & publishing accounts */
 async function loadBrandSwitch(){
@@ -447,12 +449,12 @@ function renderDashboard(readonly=false){
   groups.forEach((g, gi)=>{
     const items = NAV_TABS.filter(t=>t.group===g && tabAllowed(t.key));
     if(items.length) sideHTML += `<h4>${g}</h4>` + items.map(navItem).join('');
-    // Collapse control sits in the MIDDLE of the sidebar (after Workspace), with an arrow icon.
-    if(gi===0){
-      sideHTML += `<div class="side-collapse mid" id="sideCollapse" title="Collapse sidebar">
-          <span class="sc-ic">${ic(App.sidebarCollapsed?'expand':'collapse', 16)}</span> <span class="nav-txt">Collapse</span></div>`;
-    }
   });
+  // Collapse control: icon-only in the bottom-right corner; the label slides out on hover.
+  sideHTML += `<button class="side-collapse corner" id="sideCollapse" type="button"
+      title="${App.sidebarCollapsed?'Expand':'Collapse'} sidebar" aria-label="${App.sidebarCollapsed?'Expand':'Collapse'} sidebar">
+      <span class="sc-label">${App.sidebarCollapsed?'Expand':'Collapse'}</span>
+      <span class="sc-ic">${ic(App.sidebarCollapsed?'expand':'collapse', 16)}</span></button>`;
   v.innerHTML = `
     <div class="shell">
       <div class="sidepanel ${App.sidebarCollapsed?'collapsed':''}" id="sidepanel">
@@ -462,12 +464,15 @@ function renderDashboard(readonly=false){
         <div id="pageContent"></div>
       </div>
     </div>`;
+  if(typeof watchPage==='function') watchPage();
   v.querySelectorAll('[data-nav]').forEach(n=>n.onclick=()=>{ App.page=n.dataset.nav; renderDashboard(App.readonly); });
   const sc = $('#sideCollapse');
   if(sc) sc.onclick = ()=>{
     App.sidebarCollapsed = !App.sidebarCollapsed;
     const sp = $('#sidepanel'); if(sp) sp.classList.toggle('collapsed', App.sidebarCollapsed);
     const sic = sc.querySelector('.sc-ic'); if(sic) sic.innerHTML = ic(App.sidebarCollapsed ? 'expand' : 'collapse', 16);
+    const word = App.sidebarCollapsed ? 'Expand' : 'Collapse';
+    sc.querySelector('.sc-label').textContent = word; sc.title = sc.ariaLabel = word + ' sidebar';
     try{ localStorage.setItem('pmSidebar', App.sidebarCollapsed?'1':'0'); }catch(e){}
   };
   if(App.user){ loadPubBadge(); loadInboxBadge(); loadNotifCount(); }

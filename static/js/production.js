@@ -13,13 +13,19 @@ const STAT = {
 
 async function renderProduction(){
   const c = $('#pageContent');
+  App._prodDays = App._prodDays || 30;
   c.innerHTML = `<div class="page-head">
       <h2>Input</h2><div class="spacer"></div>
-      ${App.readonly?'':`<button class="btn ghost" id="expVid">${ic('download',15)} Export</button>
-                        <button class="btn" id="addVid">${ic('plus',15)} Upload</button>`}
+      <label class="date-sel">${ic('calendar',17)}<select id="prodDays" aria-label="Period">${[7,30,90].map(d=>
+        `<option value="${d}" ${App._prodDays===d?'selected':''}>Last ${d} days</option>`).join('')}</select></label>
+      ${App.readonly?'':`<button class="btn ghost" id="expVid">${ic('download',16)} Export</button>
+                        <button class="btn" id="addVid">${ic('plus',16)} Upload Video</button>`}
     </div>
-    <div class="tiles" id="prodTiles"></div>
-    <div class="board" id="prodBoard"></div>`;
+    <div class="stat-grid" id="prodTiles"></div>
+    <div class="board v2" id="prodBoard"></div>
+    <input type="file" id="prodFiles" accept="video/*" multiple style="display:none">`;
+  $('#prodDays').onchange = e=>{ App._prodDays = Number(e.target.value); loadProduction(); };
+  $('#prodFiles').onchange = e=>{ if(e.target.files.length) uploadFilesToStatus(e.target.files, 'input'); e.target.value=''; };
   if(!App.readonly){
     if($('#addVid')) $('#addVid').onclick = openAddVideo;
     if($('#expVid')) $('#expVid').onclick = exportBoard;
@@ -54,25 +60,64 @@ async function loadProduction(){
     });
   }
 
-  $('#prodTiles').innerHTML = `
-    ${tile('input', counts.input, 'Input')}
-    ${tile('processing', counts.processing, 'Processing')}
-    ${tile('completed', counts.completed, 'Completed')}`;
+  const days = App._prodDays || 30;
+  const sIn   = periodSeries(videos, 'created_at', days);
+  const sProc = periodSeries(videos.filter(v=>v.status==='processing'), 'updated_at', days);
+  const sDone = periodSeries(videos.filter(v=>v.status==='completed').map(v=>({t:v.completed_at||v.updated_at})), 't', days);
+  $('#prodTiles').innerHTML =
+    statCard({tone:'violet', icon:'video', n:counts.input, label:'Input', sub:'Videos added', days, ...sIn}) +
+    statCard({tone:'blue', icon:'gear', n:counts.processing, label:'Processing', sub:'In progress', days, ...sProc}) +
+    statCard({tone:'green', icon:'check', n:counts.completed, label:'Completed', sub:'Successfully processed', days, ...sDone});
 
   const board = $('#prodBoard'); board.innerHTML='';
+  const EMPTY = {
+    processing:{art:'gear',  t:'No videos processing', s:'Videos will appear here once processing starts.'},
+    completed: {art:'check', t:'No completed videos yet', s:'Processed videos will appear here.'},
+  };
   Object.keys(STAT).forEach(status=>{
-    const col = el(`<div class="col" data-status="${status}">
-      <h3><span class="tag tag-${status}"></span> ${STAT[status].col}
-        <span style="margin-left:auto;color:var(--muted)">${counts[status]}</span></h3>
+    const col = el(`<div class="col col-${status}" data-status="${status}">
+      <div class="col-h"><span class="col-dot"></span>${STAT[status].col}<span class="col-count">${counts[status]}</span></div>
       <div class="col-body"></div></div>`);
     const body = col.querySelector('.col-body');
     const items = videos.filter(v=>v.status===status);
-    if(!items.length) body.innerHTML = `<div class="empty">Drop videos here</div>`;
     items.forEach(v=> body.appendChild(videoCard(v)));
+    if(status==='input' && !App.readonly){
+      const dz = el(`<div class="in-drop ${items.length?'compact':''}" role="button" tabindex="0" aria-label="Upload videos">
+          <div class="in-drop-ic">${ic('cloudUpload',items.length?20:28)}</div>
+          <div class="in-drop-t">Drag &amp; drop videos here</div><div class="in-drop-s">or click to upload</div>
+          ${items.length?'':`<button class="btn in-drop-btn" type="button">${ic('upload',16)} Upload Videos</button>
+          <div class="in-drop-f"><span>MP4</span><span>MOV</span><span>AVI</span><span>WebM</span>
+            <span title="Large files may be limited by your storage plan">${ic('info',14)}</span></div>`}</div>`);
+      const pick = ()=>$('#prodFiles').click();
+      dz.onclick = pick; dz.onkeydown = e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); pick(); } };
+      body.appendChild(dz);
+    }else if(!items.length){
+      const E = EMPTY[status] || {art:'video', t:'Nothing here yet', s:'Drop videos here.'};
+      body.innerHTML = `<div class="col-empty">${emptyArt(E.art)}<b>${E.t}</b><span>${E.s}</span></div>`;
+    }
     if(!App.readonly) makeDropzone(col, status);
     board.appendChild(col);
   });
   startCountdownTicker();
+}
+
+/* empty-column illustration: a video file with a status badge */
+function emptyArt(badge){
+  const g = 'ea'+Math.random().toString(36).slice(2,7);
+  return `<svg class="ea" viewBox="0 0 150 120" width="150" height="120" aria-hidden="true" fill="none">
+    <defs><linearGradient id="${g}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color:var(--cc-soft2)"/><stop offset="1" style="stop-color:var(--cc-soft)"/></linearGradient></defs>
+    <circle cx="22" cy="40" r="2.5" style="fill:var(--cc)" opacity=".3"/><circle cx="128" cy="30" r="2.5" style="fill:var(--cc)" opacity=".3"/>
+    <circle cx="136" cy="70" r="2" style="fill:var(--cc)" opacity=".25"/><circle cx="16" cy="78" r="2" style="fill:var(--cc)" opacity=".25"/>
+    <circle cx="36" cy="20" r="1.8" style="fill:var(--cc)" opacity=".25"/>
+    <path d="M48 14h36l18 18v62a8 8 0 0 1-8 8H48a8 8 0 0 1-8-8V22a8 8 0 0 1 8-8z" fill="url(#${g})"/>
+    <path d="M84 14v12a6 6 0 0 0 6 6h12" fill="#fff" opacity=".6"/>
+    <rect x="56" y="46" width="30" height="26" rx="6" style="stroke:var(--cc)" stroke-width="3"/>
+    <path d="M67 53v12l9-6z" style="fill:var(--cc)"/>
+    <circle cx="100" cy="88" r="17" style="fill:${badge==='check'?'var(--cc)':'#fff'}"/>
+    ${badge==='check'
+      ? '<path d="m92 88 5.5 5.5L108 83" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>'
+      : `<g transform="translate(88 76)" style="stroke:var(--cc)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">${ICON_PATHS.gear}</g>`}
+  </svg>`;
 }
 
 function tile(cls, n, label){

@@ -182,6 +182,7 @@ async function renderSetup(){
         <span>Anyone can create an account from the login page</span></label>
       <div class="hint">Turn this off once your clients are set up. You can still create accounts for them yourself.</div>
     </div>`;
+  if(!$('#setupBody')) return;          // user left the page while it was loading
   $('#setupBody').innerHTML = credCard + `<div class="pf-grid">${rows}</div>` + alertsCard + signupCard;
   const sua = $('#su-allow');
   if(sua) sua.onchange = async ()=>{ try{ await api('/api/settings/signup',{method:'POST', body:{allow:sua.checked}});
