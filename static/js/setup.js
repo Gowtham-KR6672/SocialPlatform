@@ -75,6 +75,17 @@ async function renderSetup(){
       </div>
       <button class="btn sm grad-btn" id="sc-savecred">${ic('save',14)} Save credentials</button>
       <div class="err" id="sc-crederr"></div>
+      <details class="smtp review-urls"><summary>${ic('shield',14)} URLs for App Review &amp; webhooks (Meta, Google, TikTok…)</summary>
+        <p class="sub">Paste these into each platform's developer console. Meta asks for the first three before an app can go Live.</p>
+        ${[['Privacy Policy URL','/privacy'],['Terms of Service URL','/terms'],['Data deletion instructions URL','/data-deletion'],
+           ['Data deletion request callback (Meta)','/data-deletion/callback'],['Deauthorize callback (Meta)','/deauthorize/callback'],
+           ['Webhook callback URL (Instagram / Facebook)','/webhooks/meta']].map(([l,p])=>{
+            const u = (cfg.oauth_redirect_base||d.redirect_base||location.origin).replace(/\/$/,'') + p;
+            return `<div class="pf-redirect big" style="margin-top:6px"><span style="min-width:230px">${l}</span><code>${esc(u)}</code>
+              <button class="icon-btn sm" data-copy="${esc(u)}" title="Copy">${ic('copy',14)}</button></div>`; }).join('')}
+        <div class="hint" style="margin-top:8px">Webhook verify token: the value of <code>INSTAGRAM_WEBHOOK_VERIFY_TOKEN</code> in Render → Environment.
+          Subscribe to the <b>comments</b> field (Instagram) and <b>feed</b> field (Facebook Page). Webhooks are delivered only to Live apps.</div>
+      </details>
     </div>` : '';
 
   const statusChip = (p)=>{

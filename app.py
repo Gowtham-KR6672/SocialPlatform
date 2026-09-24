@@ -677,6 +677,7 @@ def init_db():
         ("calendar_items", "review_note", "TEXT"),
         ("users", "publish_platforms", "TEXT"),            # JSON list; NULL = all platforms
         ("users", "active_brand_id", "INTEGER"),
+        ("inbox_comments", "parent_remote_id", "TEXT"),   # reply → id of the comment it answers
     ]
     for tbl, col, typ in _migrations:
         try:
@@ -3410,9 +3411,10 @@ def _ingest_comments(db, target, item_row, comments):
             continue
         sent = _sentiment(c.get("text", ""))
         db.execute("INSERT INTO inbox_comments (item_id, target_id, platform, remote_comment_id, author, text, "
-                   "likes, created_at, sentiment, status) VALUES (?,?,?,?,?,?,?,?,?, 'new')",
+                   "likes, created_at, sentiment, status, parent_remote_id) VALUES (?,?,?,?,?,?,?,?,?, 'new', ?)",
                    (target["item_id"], target["id"], target["platform"], cid, c.get("author", ""),
-                    c.get("text", ""), int(c.get("likes") or 0), c.get("created") or _now(), sent))
+                    c.get("text", ""), int(c.get("likes") or 0), c.get("created") or _now(), sent,
+                    str(c.get("parent") or "")))
         new += 1
         if sent == "negative" and item_row is not None:
             send_alert(db, owner_and_admins(db, item_row["owner_id"]), "Negative comment",
@@ -3473,12 +3475,18 @@ def refresh_target_stats(db, t, pull_comments=True):
     return st
 
 
-def _refresh_all_stats(limit=25):
+def _refresh_all_stats(limit=40):
+    """Posts from the last 3 days refresh every 10 minutes, older posts hourly."""
     try:
         db = db_connect()
-        cutoff = (datetime.utcnow() - timedelta(minutes=30)).isoformat()
-        rows = db.execute("SELECT * FROM post_targets WHERE status='published' AND (stats_at IS NULL OR stats_at<?) "
-                          "ORDER BY stats_at LIMIT ?", (cutoff, limit)).fetchall()
+        now = datetime.utcnow()
+        recent = (now - timedelta(days=3)).isoformat()
+        c10 = (now - timedelta(minutes=10)).isoformat()
+        c60 = (now - timedelta(minutes=60)).isoformat()
+        rows = db.execute(
+            "SELECT * FROM post_targets WHERE status='published' AND ("
+            " stats_at IS NULL OR (published_at>=? AND stats_at<?) OR stats_at<?) "
+            "ORDER BY published_at DESC LIMIT ?", (recent, c10, c60, limit)).fetchall()
         for t in rows:
             try:
                 refresh_target_stats(db, t)
@@ -5988,13 +5996,16 @@ def oauth_instagram_callback():
 
 
 @app.route("/webhooks/instagram", methods=["GET", "POST"])
+@app.route("/webhooks/meta", methods=["GET", "POST"])
 def instagram_webhook():
-    """Meta Instagram webhook verification + event acknowledgement.
+    """Meta webhooks (Instagram + Facebook Page): real-time comments into the Inbox.
 
-    Set INSTAGRAM_WEBHOOK_VERIFY_TOKEN in the environment to the same random
-    value entered in Meta Developers -> Configure webhooks.
+    Set INSTAGRAM_WEBHOOK_VERIFY_TOKEN in the environment and enter the same value
+    as the "Verify token" in Meta Developers -> Webhooks. Meta only delivers
+    webhooks to apps that are Live (published).
     """
-    verify_token = os.environ.get("INSTAGRAM_WEBHOOK_VERIFY_TOKEN", "").strip()
+    verify_token = (os.environ.get("INSTAGRAM_WEBHOOK_VERIFY_TOKEN") or
+                    os.environ.get("META_WEBHOOK_VERIFY_TOKEN") or "").strip()
 
     if request.method == "GET":
         mode = request.args.get("hub.mode", "")
@@ -6004,10 +6015,155 @@ def instagram_webhook():
             return challenge, 200
         return "Verification failed", 403
 
-    # Meta expects a fast 200 response. Event processing can be added here.
-    payload = request.get_json(silent=True) or {}
-    print("Instagram webhook received:", json.dumps(payload)[:2000])
+    raw = request.get_data() or b""
+    db = get_db()
+    if not _meta_signature_ok(db, raw, request.headers.get("X-Hub-Signature-256", "")):
+        return "Invalid signature", 403
+    try:
+        payload = json.loads(raw.decode("utf-8") or "{}")
+    except Exception:
+        payload = {}
+    try:
+        _handle_meta_webhook(db, payload)
+    except Exception as e:  # noqa — never make Meta retry because of our own bug
+        try: app.logger.warning(f"webhook processing failed: {e}")
+        except Exception: pass
     return "EVENT_RECEIVED", 200
+
+
+def _meta_app_secrets(db):
+    """Every Meta app secret saved by any user (Instagram, Facebook, Threads)."""
+    rows = db.execute("SELECT value FROM settings WHERE key LIKE ? OR key LIKE ? OR key LIKE ?",
+                      ("u%_ig_app_secret", "u%_fb_app_secret", "u%_th_app_secret")).fetchall()
+    out = [r["value"] for r in rows if r["value"]]
+    out += [v for v in (get_setting(db, "ig_app_secret"),) if v]
+    return out
+
+
+def _meta_signature_ok(db, raw, header):
+    import hmac
+    if not header.startswith("sha256="):
+        return False
+    sig = header.split("=", 1)[1]
+    for secret in _meta_app_secrets(db):
+        mac = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+        if hmac.compare_digest(mac, sig):
+            return True
+    return False
+
+
+def _target_by_remote(db, platform, remote_id):
+    if not remote_id:
+        return None
+    return db.execute("SELECT * FROM post_targets WHERE platform=? AND status='published' AND "
+                      "(remote_id=? OR remote_id LIKE ?)", (platform, remote_id, "%_" + remote_id)).fetchone()
+
+
+def _handle_meta_webhook(db, payload):
+    obj = payload.get("object")
+    for entry in payload.get("entry", []) or []:
+        for ch in entry.get("changes", []) or []:
+            v = ch.get("value") or {}
+            if obj == "instagram" and ch.get("field") in ("comments", "live_comments"):
+                t = _target_by_remote(db, "instagram", (v.get("media") or {}).get("id"))
+                if not t:
+                    continue
+                frm = v.get("from") or {}
+                acct = db.execute("SELECT account_name FROM social_accounts WHERE platform='instagram' "
+                                  "AND account_id=?", (str(entry.get("id") or ""),)).fetchone()
+                if acct and (frm.get("username") or "").lower() == (acct["account_name"] or "").lstrip("@").lower():
+                    continue            # our own reply
+                row = _cal_item(db, t["item_id"])
+                _ingest_comments(db, t, row, [{"id": v.get("id"), "author": frm.get("username", ""),
+                                               "text": v.get("text", ""), "parent": v.get("parent_id", ""),
+                                               "created": _now()}])
+            elif obj == "page" and ch.get("field") == "feed" and v.get("item") == "comment" and v.get("verb") == "add":
+                frm = v.get("from") or {}
+                if str(frm.get("id") or "") == str(entry.get("id") or ""):
+                    continue            # the Page replying to itself
+                t = _target_by_remote(db, "facebook", v.get("post_id")) or \
+                    _target_by_remote(db, "facebook", (v.get("post_id") or "").split("_")[-1])
+                if not t:
+                    continue
+                par = v.get("parent_id") or ""
+                row = _cal_item(db, t["item_id"])
+                _ingest_comments(db, t, row, [{"id": v.get("comment_id"), "author": frm.get("name", "Facebook user"),
+                                               "text": v.get("message", ""),
+                                               "parent": "" if par == v.get("post_id") else par,
+                                               "created": _now()}])
+
+
+# ---- Legal pages required by Meta / Google / TikTok app review ----------------
+def _legal_ctx():
+    base = (os.environ.get("PUBLIC_BASE_URL") or os.environ.get("RENDER_EXTERNAL_URL") or request.host_url).rstrip("/")
+    return {"company": os.environ.get("COMPANY_NAME") or "SocialPlatform",
+            "contact": os.environ.get("CONTACT_EMAIL") or "",
+            "base": base, "updated": "September 2026"}
+
+
+@app.route("/privacy")
+def legal_privacy():
+    return render_template("legal.html", page="privacy", **_legal_ctx())
+
+
+@app.route("/terms")
+def legal_terms():
+    return render_template("legal.html", page="terms", **_legal_ctx())
+
+
+@app.route("/data-deletion", methods=["GET"])
+def legal_data_deletion():
+    code = (request.args.get("code") or "").strip()
+    status = None
+    if code:
+        raw = get_setting(get_db(), f"deletion_{code}")
+        status = _jl(raw, None)
+    return render_template("legal.html", page="deletion", code=code, status=status, **_legal_ctx())
+
+
+def _parse_signed_request(db, signed):
+    """Verify a Meta signed_request against any saved Meta app secret."""
+    import base64
+    import hmac
+
+    def b64(s):
+        return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+    try:
+        sig, payload = signed.split(".", 1)
+        data = json.loads(b64(payload))
+    except Exception:
+        return None
+    for secret in _meta_app_secrets(db):
+        expected = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).digest()
+        if hmac.compare_digest(expected, b64(sig)):
+            return data
+    return None
+
+
+@app.route("/data-deletion/callback", methods=["POST"])
+@app.route("/deauthorize/callback", methods=["POST"])
+def meta_data_deletion_callback():
+    """Meta "Data deletion request" + "Deauthorize" callback: removes the
+    connection (tokens) for that Meta user and returns a status URL."""
+    db = get_db()
+    data = _parse_signed_request(db, request.form.get("signed_request", ""))
+    if not data or not data.get("user_id"):
+        return jsonify({"error": "Invalid signed_request."}), 400
+    uid = str(data["user_id"])
+    rows = db.execute("SELECT id, user_id, platform FROM social_accounts WHERE account_id=?", (uid,)).fetchall()
+    for r in rows:
+        db.execute("DELETE FROM social_accounts WHERE id=?", (r["id"],))
+        if r["platform"] in LEGACY_COLS:
+            c, acol, tcol, icol = LEGACY_COLS[r["platform"]]
+            db.execute(f"UPDATE users SET {c}=0, {acol}='', {tcol}='', {icol}='' WHERE id=? AND {icol}=?",
+                       (r["user_id"], uid))
+    db.commit()
+    code = secrets.token_hex(8)
+    set_setting(db, f"deletion_{code}", json.dumps({"status": "completed", "removed": len(rows),
+                                                   "at": _now()}))
+    base = _legal_ctx()["base"]
+    return jsonify({"url": f"{base}/data-deletion?code={code}", "confirmation_code": code})
+
 
 def _oauth_popup_close(message, ok=False):
     color = "#0b8043" if ok else "#c5221f"
@@ -7232,7 +7388,7 @@ def api_inbox_sync():
     db = get_db()
     new = 0
     for t in db.execute("SELECT * FROM post_targets WHERE status='published' AND simulated=0 "
-                        "ORDER BY id DESC LIMIT 40").fetchall():
+                        "ORDER BY id DESC LIMIT 300").fetchall():
         row = _cal_item(db, t["item_id"])
         acct = _publish_account(db, row, t["platform"]) if row else None
         if not acct or acct.get("mode") != "live":
@@ -7530,7 +7686,7 @@ def _scheduler_loop():
             pass
         # (c) background maintenance, each in its own thread so publishing never waits
         t = time.time()
-        if t - last_stats > 1800:
+        if t - last_stats > 600:
             last_stats = t
             threading.Thread(target=_refresh_all_stats, daemon=True).start()
         if t - last_tokens > 3600:

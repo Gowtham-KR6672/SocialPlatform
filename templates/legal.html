@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% if page=='privacy' %}Privacy Policy{% elif page=='terms' %}Terms of Service{% else %}Data Deletion{% endif %} · {{ company }}</title>
+  <style>
+    :root{--ink:#12315a;--muted:#5a7196;--line:#dbe7f7;--brand:#2f7bff}
+    *{box-sizing:border-box}
+    body{margin:0;font-family:"Segoe UI",system-ui,-apple-system,Arial,sans-serif;background:linear-gradient(160deg,#eaf3ff,#dbeafe);color:var(--ink);line-height:1.65}
+    .wrap{max-width:820px;margin:0 auto;padding:32px 16px 56px}
+    .brand{display:flex;align-items:center;gap:10px;font-weight:700;margin-bottom:18px}
+    .brand a{color:inherit;text-decoration:none;display:flex;align-items:center;gap:10px}
+    .mark{width:32px;height:32px;border-radius:9px;background:var(--brand);color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px}
+    nav{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px;font-size:14px}
+    nav a{color:var(--brand);text-decoration:none;font-weight:600}
+    nav a.on{color:var(--ink);text-decoration:underline}
+    .card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:28px;box-shadow:0 8px 24px rgba(40,80,160,.10)}
+    h1{font-size:26px;margin:0 0 4px}
+    h2{font-size:17px;margin:26px 0 6px}
+    p,li{font-size:15px;color:#243f66}
+    ul{padding-left:22px}
+    .muted{color:var(--muted);font-size:13px}
+    .status{padding:14px;border-radius:10px;background:#e7f8f1;color:#0b8f6a;font-weight:600;margin:14px 0}
+    code{background:#eef4fd;padding:2px 6px;border-radius:5px}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><a href="/"><span class="mark">SP</span> {{ company }}</a></div>
+  <nav>
+    <a href="/privacy" class="{{ 'on' if page=='privacy' }}">Privacy Policy</a>
+    <a href="/terms" class="{{ 'on' if page=='terms' }}">Terms of Service</a>
+    <a href="/data-deletion" class="{{ 'on' if page=='deletion' }}">Data Deletion</a>
+  </nav>
+  <div class="card">
+  {% if page == 'privacy' %}
+    <h1>Privacy Policy</h1>
+    <div class="muted">Last updated: {{ updated }}</div>
+    <p>{{ company }} ("we", "the service") is a social media management tool. Businesses use it to plan and
+      publish content to their own social media accounts and to review comments and performance of that content.
+      This policy explains what data we process and why.</p>
+
+    <h2>Information we collect</h2>
+    <ul>
+      <li><b>Account information</b> you provide: username, display name, email and phone (optional).</li>
+      <li><b>Connected social accounts</b>: when you click Connect and approve access on Instagram, Facebook,
+        YouTube, X, LinkedIn, Threads, TikTok or Pinterest, we receive an access token and basic profile details
+        (account ID, username or page name) for the account you choose to connect.</li>
+      <li><b>Content you create</b>: videos, images, captions, hashtags and schedules you upload or write.</li>
+      <li><b>Performance and engagement data</b> for posts published through the service: views, likes, shares,
+        comment counts, and the text and author name of comments on those posts.</li>
+    </ul>
+
+    <h2>How we use it</h2>
+    <ul>
+      <li>To publish the content you schedule to the accounts you connected, at the time you choose.</li>
+      <li>To show you comments on your posts in one inbox and let you reply to them.</li>
+      <li>To show analytics and reports about your own posts.</li>
+      <li>To send you notifications and alerts you have enabled (for example, a failed post).</li>
+    </ul>
+    <p>We only access data from accounts you connected yourself, and only for the features above. We do not sell
+      personal data, use it for advertising, or share it with third parties except the service providers that
+      host the service (application hosting, database and file storage) and, if enabled by your administrator,
+      an AI provider used to draft captions from your own content.</p>
+
+    <h2>Storage and security</h2>
+    <p>Data is stored on secured cloud infrastructure. Access tokens are used only by the service to call the
+      platforms' official APIs on your behalf and are never shown to other users.</p>
+
+    <h2>Retention and your choices</h2>
+    <ul>
+      <li>You can disconnect any social account at any time in <b>Setup</b>; its access token is deleted immediately.</li>
+      <li>You can also remove the app's access from the platform itself (for example Instagram → Settings →
+        Website permissions → Apps and websites).</li>
+      <li>To delete your data entirely, follow the steps on the <a href="/data-deletion">Data Deletion</a> page.</li>
+    </ul>
+
+    <h2>Contact</h2>
+    <p>{% if contact %}Questions about this policy: <a href="mailto:{{ contact }}">{{ contact }}</a>{% else %}Questions about this policy: contact the administrator of your {{ company }} account.{% endif %}</p>
+
+  {% elif page == 'terms' %}
+    <h1>Terms of Service</h1>
+    <div class="muted">Last updated: {{ updated }}</div>
+    <p>By using {{ company }} you agree to these terms.</p>
+    <h2>The service</h2>
+    <p>{{ company }} lets you schedule and publish content to social media accounts you own or manage, and view
+      comments and analytics for that content, using each platform's official API.</p>
+    <h2>Your responsibilities</h2>
+    <ul>
+      <li>Only connect accounts you are authorised to manage, and keep your login details secure.</li>
+      <li>You are responsible for the content you publish and must follow each platform's terms and community
+        guidelines (Meta, Google/YouTube, X, LinkedIn, TikTok, Pinterest).</li>
+      <li>Do not use the service for spam, unlawful content or to infringe others' rights.</li>
+    </ul>
+    <h2>Third-party platforms</h2>
+    <p>Publishing, comments and analytics depend on the platforms' APIs and approvals. Platforms may change or
+      limit their APIs, and we are not responsible for their availability or decisions.</p>
+    <h2>Availability</h2>
+    <p>We aim to keep the service available and posts on schedule, but the service is provided "as is" without
+      warranties. We are not liable for indirect losses, including missed or delayed posts.</p>
+    <h2>Termination</h2>
+    <p>You may stop using the service at any time and request deletion of your data. We may suspend accounts
+      that violate these terms.</p>
+    <h2>Contact</h2>
+    <p>{% if contact %}<a href="mailto:{{ contact }}">{{ contact }}</a>{% else %}Contact the administrator of your {{ company }} account.{% endif %}</p>
+
+  {% else %}
+    <h1>Data Deletion</h1>
+    <div class="muted">Last updated: {{ updated }}</div>
+    {% if code %}
+      {% if status %}
+        <div class="status">Request <code>{{ code }}</code>: {{ status.status }} — the connection and its access tokens were removed ({{ status.at[:10] }}).</div>
+      {% else %}
+        <p class="muted">No deletion request was found for code <code>{{ code }}</code>.</p>
+      {% endif %}
+    {% endif %}
+    <p>You can remove your data from {{ company }} in any of these ways:</p>
+    <h2>1. Disconnect a social account</h2>
+    <p>In {{ company }}, open <b>Setup</b> and click <b>Disconnect</b> next to the account. Its access token is
+      deleted immediately and no further data is collected from it.</p>
+    <h2>2. Remove access from the platform</h2>
+    <p>For Instagram: Settings → Website permissions → Apps and websites → remove {{ company }}.
+      For Facebook: Settings &amp; privacy → Settings → Business integrations → remove {{ company }}.
+      When you do this, the platform notifies us and we delete the connection automatically.</p>
+    <h2>3. Delete everything</h2>
+    <p>{% if contact %}Email <a href="mailto:{{ contact }}?subject=Data%20deletion%20request">{{ contact }}</a>{% else %}Contact the administrator of your {{ company }} account{% endif %}
+      with your username and the accounts you connected. We delete your account, connected-account tokens,
+      uploaded media and stored comments within 30 days and confirm by email.</p>
+  {% endif %}
+  </div>
+</div>
+</body>
+</html>

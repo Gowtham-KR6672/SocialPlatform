@@ -18,6 +18,10 @@ services:
         generateValue: true
       - key: ADMIN_PASSWORD
         generateValue: true
+      # Verify token for Meta webhooks (real-time comments). Paste the same value in
+      # Meta Developers → Webhooks → Verify token.
+      - key: INSTAGRAM_WEBHOOK_VERIFY_TOKEN
+        generateValue: true
       - key: DATABASE_URL            # Supabase Postgres (pooler, port 6543)
         sync: false
       - key: SUPABASE_URL

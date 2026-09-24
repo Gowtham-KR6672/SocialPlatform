@@ -944,64 +944,119 @@ def stats(platform, a, rid):
 
 
 # --------------------------------------------------------------------------- #
-#  Comments (inbox) → [{"id","author","text","likes","created"}]
+#  Comments (inbox) → [{"id","author","text","likes","created","parent"}]
+#  Follows every page of results and includes threaded replies ("parent" is the
+#  id of the comment being replied to, "" for top-level). Comments written by
+#  the connected account itself (e.g. replies sent from the dashboard) are
+#  skipped so they don't show up in the inbox as new comments.
 # --------------------------------------------------------------------------- #
+MAX_COMMENTS = 1000
+
+
+def _pages(first_url, headers=None, next_of=None):
+    """Yield result pages, following the platform's paging cursor."""
+    url, seen = first_url, 0
+    while url and seen < 40:
+        r = _req(url, headers=headers)
+        if not r.ok or not isinstance(r.data, dict):
+            return
+        yield r.data
+        seen += 1
+        url = next_of(r.data) if next_of else ((r.data.get("paging") or {}).get("next"))
+
+
 def comments(platform, a, rid):
     tok = a.get("token")
     if not (tok and rid):
         return []
+    own_name = (a.get("account_name") or "").lstrip("@").lower()
+    own_id = str(a.get("account_id") or "")
     out = []
+
+    def add(cid, author, text, likes=0, created="", parent="", author_id=""):
+        if not cid:
+            return
+        if (own_name and (author or "").lstrip("@").lower() == own_name) or (own_id and str(author_id) == own_id):
+            return
+        out.append({"id": str(cid), "author": author or "", "text": text or "", "likes": int(likes or 0),
+                    "created": created or "", "parent": str(parent or "")})
+
     try:
         if platform == "instagram":
-            r = _req(f"{IG_GRAPH}/{rid}/comments?" + urllib.parse.urlencode({
-                "fields": "id,username,text,like_count,timestamp", "access_token": tok}))
-            for c in ((r.data or {}).get("data", []) if r.ok else []):
-                out.append({"id": c["id"], "author": c.get("username", ""), "text": c.get("text", ""),
-                            "likes": int(c.get("like_count", 0)), "created": c.get("timestamp", "")})
+            fields = ("id,username,text,like_count,timestamp,"
+                      "replies{id,username,text,like_count,timestamp}")
+            url = f"{IG_GRAPH}/{rid}/comments?" + urllib.parse.urlencode(
+                {"fields": fields, "limit": 50, "access_token": tok})
+            for page in _pages(url):
+                for c in page.get("data", []):
+                    add(c.get("id"), c.get("username"), c.get("text"), c.get("like_count"), c.get("timestamp"))
+                    for rp in ((c.get("replies") or {}).get("data") or []):
+                        add(rp.get("id"), rp.get("username"), rp.get("text"), rp.get("like_count"),
+                            rp.get("timestamp"), parent=c.get("id"))
+                if len(out) >= MAX_COMMENTS:
+                    break
         elif platform == "facebook":
-            r = _req(f"{FB_GRAPH}/{rid}/comments?" + urllib.parse.urlencode({
-                "fields": "id,from,message,created_time,like_count", "access_token": tok}))
-            for c in ((r.data or {}).get("data", []) if r.ok else []):
-                out.append({"id": c["id"], "author": (c.get("from") or {}).get("name", "Facebook user"),
-                            "text": c.get("message", ""), "likes": int(c.get("like_count", 0)),
-                            "created": c.get("created_time", "")})
+            # filter=stream returns top-level comments AND replies in one chronological list
+            url = f"{FB_GRAPH}/{rid}/comments?" + urllib.parse.urlencode({
+                "filter": "stream", "limit": 100, "access_token": tok,
+                "fields": "id,from,message,created_time,like_count,parent{id}"})
+            for page in _pages(url):
+                for c in page.get("data", []):
+                    frm = c.get("from") or {}
+                    add(c.get("id"), frm.get("name", "Facebook user"), c.get("message"), c.get("like_count"),
+                        c.get("created_time"), parent=(c.get("parent") or {}).get("id", ""), author_id=frm.get("id", ""))
+                if len(out) >= MAX_COMMENTS:
+                    break
         elif platform == "youtube":
-            r = _req(f"{YT_API}/commentThreads?part=snippet&maxResults=50&videoId={rid}",
-                     headers={"Authorization": "Bearer " + tok})
-            for t in ((r.data or {}).get("items", []) if r.ok else []):
-                c = t["snippet"]["topLevelComment"]
-                s = c["snippet"]
-                out.append({"id": c["id"], "author": s.get("authorDisplayName", ""),
-                            "text": s.get("textOriginal") or s.get("textDisplay", ""),
-                            "likes": int(s.get("likeCount", 0)), "created": s.get("publishedAt", "")})
+            hdr = {"Authorization": "Bearer " + tok}
+            base = f"{YT_API}/commentThreads?part=snippet,replies&maxResults=100&videoId={rid}"
+            nxt = lambda d: (base + "&pageToken=" + d["nextPageToken"]) if d.get("nextPageToken") else None
+            for page in _pages(base, headers=hdr, next_of=nxt):
+                for t in page.get("items", []):
+                    top = t["snippet"]["topLevelComment"]
+                    s = top["snippet"]
+                    add(top["id"], s.get("authorDisplayName"), s.get("textOriginal") or s.get("textDisplay"),
+                        s.get("likeCount"), s.get("publishedAt"),
+                        author_id=(s.get("authorChannelId") or {}).get("value", ""))
+                    for rp in ((t.get("replies") or {}).get("comments") or []):
+                        rs = rp["snippet"]
+                        add(rp["id"], rs.get("authorDisplayName"), rs.get("textOriginal") or rs.get("textDisplay"),
+                            rs.get("likeCount"), rs.get("publishedAt"), parent=top["id"],
+                            author_id=(rs.get("authorChannelId") or {}).get("value", ""))
+                if len(out) >= MAX_COMMENTS:
+                    break
         elif platform == "twitter":
-            r = _req(f"{X_API}/tweets/search/recent?" + urllib.parse.urlencode({
-                "query": f"conversation_id:{rid}", "tweet.fields": "author_id,created_at,public_metrics",
-                "expansions": "author_id", "user.fields": "username", "max_results": 50}),
-                headers={"Authorization": "Bearer " + tok})
-            if r.ok and isinstance(r.data, dict):
-                users = {u["id"]: u.get("username", "") for u in (r.data.get("includes") or {}).get("users", [])}
-                for c in r.data.get("data", []):
-                    out.append({"id": c["id"], "author": "@" + users.get(c.get("author_id"), ""),
-                                "text": c.get("text", ""),
-                                "likes": int((c.get("public_metrics") or {}).get("like_count", 0)),
-                                "created": c.get("created_at", "")})
+            hdr = {"Authorization": "Bearer " + tok}
+            q = {"query": f"conversation_id:{rid}", "tweet.fields": "author_id,created_at,public_metrics,in_reply_to_user_id,referenced_tweets",
+                 "expansions": "author_id", "user.fields": "username", "max_results": 100}
+            base = f"{X_API}/tweets/search/recent?" + urllib.parse.urlencode(q)
+            nxt = lambda d: (base + "&next_token=" + (d.get("meta") or {})["next_token"]) \
+                if (d.get("meta") or {}).get("next_token") else None
+            for page in _pages(base, headers=hdr, next_of=nxt):
+                users = {u["id"]: u.get("username", "") for u in (page.get("includes") or {}).get("users", [])}
+                for c in page.get("data", []):
+                    ref = next((r_["id"] for r_ in (c.get("referenced_tweets") or []) if r_.get("type") == "replied_to"), "")
+                    add(c["id"], "@" + users.get(c.get("author_id"), ""), c.get("text"),
+                        (c.get("public_metrics") or {}).get("like_count", 0), c.get("created_at"),
+                        parent="" if ref == rid else ref, author_id=c.get("author_id", ""))
         elif platform == "threads":
-            r = _req(f"{THREADS_GRAPH}/{rid}/replies?" + urllib.parse.urlencode({
-                "fields": "id,text,username,timestamp", "access_token": tok}))
-            for c in ((r.data or {}).get("data", []) if r.ok else []):
-                out.append({"id": c["id"], "author": "@" + c.get("username", ""), "text": c.get("text", ""),
-                            "likes": 0, "created": c.get("timestamp", "")})
+            # /conversation returns every reply in the thread, at any depth
+            url = f"{THREADS_GRAPH}/{rid}/conversation?" + urllib.parse.urlencode({
+                "fields": "id,text,username,timestamp,replied_to{id}", "reverse": "false", "access_token": tok})
+            for page in _pages(url):
+                for c in page.get("data", []):
+                    par = (c.get("replied_to") or {}).get("id", "")
+                    add(c.get("id"), "@" + (c.get("username") or ""), c.get("text"), 0, c.get("timestamp"),
+                        parent="" if par == rid else par)
         elif platform == "linkedin":
-            r = _req(f"{LI_API}/rest/socialActions/{urllib.parse.quote(rid, safe='')}/comments",
+            r = _req(f"{LI_API}/rest/socialActions/{urllib.parse.quote(rid, safe='')}/comments?count=100",
                      headers=_li_hdr(tok))
             for c in ((r.data or {}).get("elements", []) if r.ok and isinstance(r.data, dict) else []):
-                out.append({"id": c.get("$URN") or c.get("commentUrn") or c.get("id", ""),
-                            "author": "LinkedIn member", "text": ((c.get("message") or {}).get("text", "")),
-                            "likes": 0, "created": ""})
+                add(c.get("$URN") or c.get("commentUrn") or c.get("id", ""), "LinkedIn member",
+                    (c.get("message") or {}).get("text", ""), author_id=c.get("actor", ""))
     except Exception:
         pass
-    return out
+    return out[:MAX_COMMENTS]
 
 
 def reply(platform, a, rid, comment_id, text):

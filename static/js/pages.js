@@ -172,6 +172,7 @@ async function renderInbox(){
   const sentChip = s => s==='negative' ? `<span class="chip danger">${ic('alert',11)} Negative</span>` : s==='positive' ? `<span class="chip completed">${ic('heart',11)} Positive</span>` : `<span class="chip draft">Neutral</span>`;
   body.innerHTML = hiddenNote + d.comments.map(cm=>`<div class="ib-item ${cm.sentiment==='negative'?'neg':''}" data-id="${cm.id}">
       <div class="ib-head">${pi(cm.platform,18)} <b>${esc(cm.author||'someone')}</b> ${sentChip(cm.sentiment)}
+        ${cm.parent_remote_id?`<span class="chip draft" title="A reply to another comment">${ic('message',11)} Reply in thread</span>`:''}
         <span class="muted">on “${esc(cm.post_title||'post')}” · ${fmtTime((cm.created_at||'').replace('Z','').slice(0,19))}</span>
         ${cm.permalink?`<a href="${esc(cm.permalink)}" target="_blank" rel="noopener" class="muted">${ic('external',13)}</a>`:''}</div>
       <div class="ib-text">${esc(cm.text)}</div>
