@@ -22,6 +22,12 @@ services:
       # Meta Developers → Webhooks → Verify token.
       - key: INSTAGRAM_WEBHOOK_VERIFY_TOKEN
         generateValue: true
+      # Fernet key that encrypts OAuth tokens, app secrets and 2FA secrets in the
+      # database. Generate one with:
+      #   python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"
+      # Set it once and never change it (old values also decrypt with a key derived from SECRET_KEY).
+      - key: ENCRYPTION_KEY
+        sync: false
       - key: DATABASE_URL            # Supabase Postgres (pooler, port 6543)
         sync: false
       - key: SUPABASE_URL

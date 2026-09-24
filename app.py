@@ -228,6 +228,8 @@ _ID_TABLES = {
     # V31
     "social_accounts", "post_targets", "jobs", "activity_log", "brands",
     "queue_slots", "review_links", "stats_history", "inbox_comments",
+    # V32
+    "account_stats", "dm_messages", "brand_kits", "library_items", "bio_pages", "short_links", "link_clicks",
 }
 _INSERT_RE = re.compile(r"^\s*INSERT\s+INTO\s+([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
 
@@ -352,8 +354,143 @@ def close_db(exc):
         db.close()
 
 
+# --------------------------------------------------------------------------- #
+#  Passwords (V32): scrypt via Werkzeug (memory-hard, OWASP-recommended).
+#  Old SHA-256 hashes still verify and are upgraded on the next login.
+# --------------------------------------------------------------------------- #
+from werkzeug.security import generate_password_hash, check_password_hash
+
+
+def _legacy_hash(pw):
+    return hashlib.sha256(("va$" + (pw or "")).encode("utf-8")).hexdigest()
+
+
 def hash_pw(pw):
-    return hashlib.sha256(("va$" + pw).encode("utf-8")).hexdigest()
+    return generate_password_hash(pw or "")
+
+
+def verify_pw(stored, pw):
+    if not stored:
+        return False
+    if stored.startswith(("scrypt:", "pbkdf2:")):
+        try:
+            return check_password_hash(stored, pw or "")
+        except Exception:
+            return False
+    return secrets.compare_digest(stored, _legacy_hash(pw))
+
+
+def pw_needs_upgrade(stored):
+    return bool(stored) and not stored.startswith("scrypt:")
+
+
+# --------------------------------------------------------------------------- #
+#  Encryption at rest (V32) for OAuth tokens and secrets. Uses ENCRYPTION_KEY
+#  (a Fernet key) when set, else a key derived from SECRET_KEY. Values are
+#  stored as "enc1:<token>"; plaintext from older versions still reads fine
+#  and is encrypted automatically at startup.
+# --------------------------------------------------------------------------- #
+ENC_PREFIX = "enc1:"
+_FERNET = None
+
+
+def _fernet():
+    global _FERNET
+    if _FERNET is None:
+        import base64
+        from cryptography.fernet import Fernet, MultiFernet
+        derived = base64.urlsafe_b64encode(hashlib.sha256(("sp-enc:" + app.secret_key).encode()).digest())
+        keys = []
+        env_key = (os.environ.get("ENCRYPTION_KEY") or "").strip()
+        if env_key:
+            try:
+                keys.append(Fernet(env_key.encode()))
+            except Exception:
+                pass
+        keys.append(Fernet(derived))
+        _FERNET = MultiFernet(keys)
+    return _FERNET
+
+
+def enc(v):
+    if v is None or v == "" or (isinstance(v, str) and v.startswith(ENC_PREFIX)):
+        return v
+    return ENC_PREFIX + _fernet().encrypt(str(v).encode("utf-8")).decode()
+
+
+def dec(v):
+    if isinstance(v, str) and v.startswith(ENC_PREFIX):
+        try:
+            return _fernet().decrypt(v[len(ENC_PREFIX):].encode()).decode("utf-8")
+        except Exception:
+            return ""
+    return v
+
+
+_SECRET_SETTING_SUFFIXES = ("_secret", "_api_key", "smtp_pass", "ig_token", "_client_secret")
+
+
+def _is_secret_setting(key):
+    return any(key.endswith(x) for x in _SECRET_SETTING_SUFFIXES)
+
+
+# --------------------------------------------------------------------------- #
+#  Login rate limiting (V32) — in-memory sliding window (single web worker).
+# --------------------------------------------------------------------------- #
+_RATE = {}
+_RATE_LOCK = threading.Lock()
+
+
+def client_ip():
+    fwd = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+    return fwd or (request.remote_addr or "?")
+
+
+def rate_limited(key, limit, window, hit=True):
+    """True if `key` already has >= limit events in the last `window` seconds."""
+    now = time.time()
+    with _RATE_LOCK:
+        lst = [t for t in _RATE.get(key, []) if now - t < window]
+        over = len(lst) >= limit
+        if hit and not over:
+            lst.append(now)
+        _RATE[key] = lst
+        if len(_RATE) > 20000:                     # keep memory bounded
+            for k in list(_RATE)[:5000]:
+                _RATE.pop(k, None)
+    return over
+
+
+def rate_clear(key):
+    with _RATE_LOCK:
+        _RATE.pop(key, None)
+
+
+# --------------------------------------------------------------------------- #
+#  Two-factor authentication (V32) — TOTP (RFC 6238), works with Google
+#  Authenticator, Microsoft Authenticator, 1Password, Authy…
+# --------------------------------------------------------------------------- #
+def _totp_code(secret_b32, counter):
+    import base64
+    import hmac
+    import struct
+    key = base64.b32decode(secret_b32.upper() + "=" * (-len(secret_b32) % 8))
+    h = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+    o = h[-1] & 0x0F
+    return "%06d" % ((struct.unpack(">I", h[o:o + 4])[0] & 0x7FFFFFFF) % 1000000)
+
+
+def totp_verify(secret_b32, code, window=1):
+    code = re.sub(r"\D", "", code or "")
+    if not (secret_b32 and len(code) == 6):
+        return False
+    now = int(time.time() // 30)
+    return any(secrets.compare_digest(_totp_code(secret_b32, now + w), code) for w in range(-window, window + 1))
+
+
+def totp_new_secret():
+    import base64
+    return base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=")
 
 
 def init_db():
@@ -555,6 +692,45 @@ def init_db():
             status TEXT, reply_text TEXT, replied_at TEXT, replied_by TEXT,
             reply_error TEXT
         );
+        -- V32: daily account-level stats (followers, reach, profile views)
+        CREATE TABLE IF NOT EXISTS account_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER, user_id INTEGER, platform TEXT, day TEXT,
+            followers INTEGER DEFAULT 0, reach INTEGER DEFAULT 0, impressions INTEGER DEFAULT 0,
+            profile_views INTEGER DEFAULT 0, media_count INTEGER DEFAULT 0, captured_at TEXT
+        );
+        -- V32: Instagram / Facebook direct messages
+        CREATE TABLE IF NOT EXISTS dm_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER, user_id INTEGER, platform TEXT, conversation_id TEXT,
+            participant_id TEXT, participant_name TEXT, remote_id TEXT, from_id TEXT, from_name TEXT,
+            text TEXT, created_at TEXT, direction TEXT, status TEXT, sent_by TEXT
+        );
+        CREATE TABLE IF NOT EXISTS brand_kits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workspace_id INTEGER, brand_id INTEGER, logo TEXT, color_primary TEXT, color_secondary TEXT,
+            tone TEXT, default_hashtags TEXT, banned_words TEXT, website TEXT, updated_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS library_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workspace_id INTEGER, brand_id INTEGER, kind TEXT, title TEXT, body TEXT, filename TEXT,
+            created_by TEXT, created_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS bio_pages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workspace_id INTEGER, brand_id INTEGER, slug TEXT, title TEXT, bio TEXT, avatar TEXT,
+            theme TEXT, links TEXT, show_posts INTEGER DEFAULT 1, created_at TEXT, updated_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS short_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workspace_id INTEGER, code TEXT, url TEXT, label TEXT, item_id INTEGER, platform TEXT,
+            utm_source TEXT, utm_medium TEXT, utm_campaign TEXT, utm_content TEXT,
+            clicks INTEGER DEFAULT 0, created_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS link_clicks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            link_id INTEGER, workspace_id INTEGER, at TEXT, day TEXT, referrer TEXT
+        );
         CREATE TABLE IF NOT EXISTS invoices (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
@@ -678,6 +854,20 @@ def init_db():
         ("users", "publish_platforms", "TEXT"),            # JSON list; NULL = all platforms
         ("users", "active_brand_id", "INTEGER"),
         ("inbox_comments", "parent_remote_id", "TEXT"),   # reply → id of the comment it answers
+        # ---- V32: security ------------------------------------------------------
+        ("users", "totp_secret", "TEXT"),
+        ("users", "totp_pending", "TEXT"),
+        ("users", "totp_enabled", "INTEGER DEFAULT 0"),
+        ("users", "recovery_codes", "TEXT"),
+        ("users", "reset_token_hash", "TEXT"),
+        ("users", "reset_token_exp", "REAL"),
+        # ---- V32: imported posts, tracked links -----------------------------------
+        ("calendar_items", "source", "TEXT"),             # NULL/dashboard | imported
+        ("calendar_items", "external_thumb", "TEXT"),
+        ("calendar_items", "external_url", "TEXT"),
+        ("calendar_items", "link_url", "TEXT"),           # website link for UTM tracking
+        ("calendar_items", "link_campaign", "TEXT"),
+        ("social_accounts", "imported_at", "TEXT"),
     ]
     for tbl, col, typ in _migrations:
         try:
@@ -744,9 +934,34 @@ def init_db():
         db.execute("DELETE FROM social_accounts WHERE mode='demo' OR token IS NULL OR token=''")
     except Exception:
         pass
+    db.commit()
+    _encrypt_existing_secrets(db)
+    _promote_superadmin_creds(db)
 
     db.commit()
     db.close()
+
+
+def _encrypt_existing_secrets(db):
+    """One-time (idempotent) migration: encrypt tokens/secrets stored in plaintext."""
+    try:
+        for r in db.execute("SELECT id, token, refresh_token, extra FROM social_accounts").fetchall():
+            vals = [enc(r["token"]), enc(r["refresh_token"]), enc(r["extra"])]
+            if vals != [r["token"], r["refresh_token"], r["extra"]]:
+                db.execute("UPDATE social_accounts SET token=?, refresh_token=?, extra=? WHERE id=?",
+                           vals + [r["id"]])
+        cols = ["ig_token", "fb_token", "yt_token", "tw_token", "google_token"]
+        for r in db.execute(f"SELECT id, {', '.join(cols)} FROM users").fetchall():
+            new = [enc(r[c]) for c in cols]
+            if new != [r[c] for c in cols]:
+                db.execute(f"UPDATE users SET {', '.join(c + '=?' for c in cols)} WHERE id=?", new + [r["id"]])
+        for r in db.execute("SELECT key, value FROM settings").fetchall():
+            if r["value"] and _is_secret_setting(r["key"]) and not str(r["value"]).startswith(ENC_PREFIX):
+                db.execute("UPDATE settings SET value=? WHERE key=?", (enc(r["value"]), r["key"]))
+        db.commit()
+    except Exception as e:  # noqa
+        try: print("secret encryption migration skipped:", e)
+        except Exception: pass
 
 
 # --------------------------------------------------------------------------- #
@@ -755,10 +970,12 @@ def init_db():
 def get_setting(db, key, default=""):
     # use positional access so this works on both Row and plain-tuple connections
     row = db.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
-    return row[0] if row else default
+    return dec(row[0]) if row else default
 
 
 def set_setting(db, key, value):
+    if value and _is_secret_setting(key):
+        value = enc(value)                      # secrets are encrypted at rest
     db.execute("INSERT INTO settings (key, value) VALUES (?,?) "
                "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
     db.commit()
@@ -778,10 +995,11 @@ def uset_setting(db, uid, base, value):
 
 
 def admin_ids(db):
-    """User ids of every admin + superadmin (the people who act on content)."""
+    """User ids of the SuperAdmin(s). (Clients' own admins are reached through
+    owner_and_admins, which adds the item's owner and workspace owner.)"""
     try:
         rows = db.execute(
-            "SELECT id FROM users WHERE role IN ('admin','superadmin')").fetchall()
+            "SELECT id FROM users WHERE role='superadmin'").fetchall()
         return [r["id"] for r in rows]
     except Exception:
         return []
@@ -1082,6 +1300,51 @@ def require_super():
     return u
 
 
+# --------------------------------------------------------------------------- #
+#  Workspaces (V32) — each client (a primary User) plus its Sub-Users is one
+#  workspace. Everything is scoped through the record's owner, so a client only
+#  ever sees its own posts, videos, analytics and inbox. SuperAdmin sees all.
+# --------------------------------------------------------------------------- #
+def ws_owner_id(db, uid):
+    """Workspace (primary account id) a user id belongs to."""
+    if not uid:
+        return None
+    row = db.execute("SELECT id, parent_id FROM users WHERE id=?", (uid,)).fetchone()
+    if not row:
+        return None
+    return row["parent_id"] or row["id"]
+
+
+def ws_member_ids(db, u):
+    """User ids in the login's workspace, or None for the SuperAdmin (= all)."""
+    if not u or is_super(u):
+        return None
+    ws = billing_user_id(u)
+    ids = [ws] + [r["id"] for r in db.execute("SELECT id FROM users WHERE parent_id=?", (ws,)).fetchall()]
+    return ids
+
+
+def ws_sql(db, u, col="owner_id"):
+    """(" AND <col> IN (...)", args) restricting a query to the login's workspace."""
+    ids = ws_member_ids(db, u)
+    if ids is None:
+        return "", []
+    return f" AND {col} IN ({','.join('?' * len(ids))})", ids
+
+
+def in_ws(db, u, owner_id):
+    ids = ws_member_ids(db, u)
+    return ids is None or (owner_id in ids)
+
+
+def ws_usernames(db, u):
+    ids = ws_member_ids(db, u)
+    if ids is None:
+        return None
+    q = ",".join("?" * len(ids))
+    return [r["username"] for r in db.execute(f"SELECT username FROM users WHERE id IN ({q})", ids).fetchall()]
+
+
 def _user_platform_map(u):
     """{platform: "live"|"demo"|""} for every supported network."""
     out = {k: "" for k in P.ORDER}
@@ -1136,6 +1399,7 @@ def user_public(u):
         "subscription": (subscription_info(get_db(), u) if u else None),
         # first-time onboarding — the Welcome popup + wizard show only until done
         "onboarding_done": bool(_get("onboarding_done")),
+        "totp_enabled": bool(_get("totp_enabled")),
         # per-user platform connection status (each user connects their OWN)
         "platforms": _user_platform_map(u),
         "active_brand_id": _get("active_brand_id"),
@@ -1190,6 +1454,45 @@ _SUB_EXEMPT_PREFIXES = (
 )
 
 
+_WS_GUARDS = [
+    ("/api/calendar/", "cid", "SELECT owner_id FROM calendar_items WHERE id=?"),
+    ("/api/published/", "cid", "SELECT owner_id FROM calendar_items WHERE id=?"),
+    ("/api/videos/", "vid", "SELECT owner_id FROM videos WHERE id=?"),
+    ("/api/chat/video/", "vid", "SELECT owner_id FROM videos WHERE id=?"),
+    ("/api/targets/", "tid", "SELECT c.owner_id FROM post_targets t JOIN calendar_items c ON c.id=t.item_id WHERE t.id=?"),
+    ("/api/inbox/", "iid", "SELECT c.owner_id FROM inbox_comments i JOIN calendar_items c ON c.id=i.item_id WHERE i.id=?"),
+]
+
+
+@app.before_request
+def _enforce_workspace():
+    """Stop one client from opening another client's item by guessing its id."""
+    path = request.path or ""
+    args = request.view_args or {}
+    if not path.startswith("/api/") or not args:
+        return
+    u = current_user()
+    if not u or is_super(u):
+        return
+    db = get_db()
+    for prefix, key, sql in _WS_GUARDS:
+        if path.startswith(prefix) and key in args:
+            row = db.execute(sql, (args[key],)).fetchone()
+            if row is not None and not in_ws(db, u, row[0]):
+                return jsonify({"error": "Not found."}), 404
+            return
+    if path.startswith("/api/content/") and "cid" in args:
+        row = db.execute("SELECT owner FROM content_items WHERE id=?", (args["cid"],)).fetchone()
+        if row is not None and row[0] not in (ws_usernames(db, u) or []):
+            return jsonify({"error": "Not found."}), 404
+    if path.startswith("/api/notifications/") and "nid" in args:
+        row = db.execute("SELECT audience FROM notifications WHERE id=?", (args["nid"],)).fetchone()
+        if row is not None:
+            aud = row[0] or "all"
+            if aud != "all" and str(u["id"]) not in aud.split(","):
+                return jsonify({"error": "Not found."}), 404
+
+
 @app.before_request
 def _enforce_subscription():
     if request.method in ("GET", "HEAD", "OPTIONS"):
@@ -1239,6 +1542,10 @@ def _validate_password(pw):
 
 @app.route("/api/register", methods=["POST"])
 def api_register():
+    if rate_limited("register:" + client_ip(), 10, 3600):
+        return jsonify({"error": "Too many sign-ups from this network. Try again later."}), 429
+    if (get_setting(get_db(), "allow_signup") or "1") == "0":
+        return jsonify({"error": "Sign-up is closed. Ask the administrator for an account."}), 403
     d = request.get_json(force=True)
     username = (d.get("username") or "").strip()
     password = d.get("password") or ""
@@ -1267,22 +1574,53 @@ def api_register():
 
 @app.route("/api/reset-password", methods=["POST"])
 def api_reset_password():
-    """Reset a password by username (simple flow for local/single-team use)."""
-    d = request.get_json(force=True)
+    """Step 1 of "Forgot password": email a one-time reset link (30 minutes).
+    The response never reveals whether the username exists."""
+    if rate_limited("reset:" + client_ip(), 5, 3600):
+        return jsonify({"error": "Too many reset requests. Try again in an hour."}), 429
+    d = request.get_json(force=True) or {}
     username = (d.get("username") or "").strip()
-    newpw = d.get("password") or ""
     if not username:
         return jsonify({"error": "Enter your username."}), 400
+    db = get_db()
+    if not _smtp_cfg(db)["host"]:
+        return jsonify({"error": "Password reset by email isn't set up on this server. "
+                                 "Ask your administrator to reset your password."}), 400
+    row = db.execute("SELECT * FROM users WHERE lower(username)=lower(?)", (username,)).fetchone()
+    if row and (row["email"] or "").strip():
+        token = secrets.token_urlsafe(32)
+        db.execute("UPDATE users SET reset_token_hash=?, reset_token_exp=? WHERE id=?",
+                   (hashlib.sha256(token.encode()).hexdigest(), time.time() + 1800, row["id"]))
+        db.commit()
+        link = f"{_redirect_base()}/?reset_token={token}"
+        threading.Thread(target=_bg_email, args=(row["email"].strip(), "Reset your password",
+                         f"Hi {row['display_name'] or row['username']},\n\nSomeone asked to reset your password. "
+                         f"Open this link within 30 minutes to choose a new one:\n\n{link}\n\n"
+                         f"If it wasn't you, ignore this email."), daemon=True).start()
+    return jsonify({"ok": True, "message": "If that account has an email address on file, a reset link "
+                                           "has been sent to it."})
+
+
+@app.route("/api/reset-password/confirm", methods=["POST"])
+def api_reset_password_confirm():
+    """Step 2: set a new password with the emailed token."""
+    if rate_limited("resetc:" + client_ip(), 10, 3600):
+        return jsonify({"error": "Too many attempts. Try again later."}), 429
+    d = request.get_json(force=True) or {}
+    token = (d.get("token") or "").strip()
+    newpw = d.get("password") or ""
     perr = _validate_password(newpw)
     if perr:
         return jsonify({"error": perr}), 400
     db = get_db()
-    row = db.execute("SELECT * FROM users WHERE lower(username)=lower(?)", (username,)).fetchone()
-    if not row:
-        return jsonify({"error": "No account found with that username."}), 404
-    db.execute("UPDATE users SET password_hash=? WHERE id=?",
+    row = db.execute("SELECT * FROM users WHERE reset_token_hash=?",
+                     (hashlib.sha256(token.encode()).hexdigest(),)).fetchone() if token else None
+    if not row or not row["reset_token_exp"] or float(row["reset_token_exp"]) < time.time():
+        return jsonify({"error": "This reset link is invalid or has expired. Request a new one."}), 400
+    db.execute("UPDATE users SET password_hash=?, reset_token_hash=NULL, reset_token_exp=NULL WHERE id=?",
                (hash_pw(newpw), row["id"]))
     db.commit()
+    log_activity(db, dict(row), "password_reset", "user", row["id"], "via email link")
     return jsonify({"ok": True})
 
 
@@ -1291,13 +1629,131 @@ def api_login():
     d = request.get_json(force=True)
     username = (d.get("username") or "").strip()
     password = d.get("password") or ""
+    ip = client_ip()
+    ukey, ikey = f"login:{ip}:{username.lower()}", f"loginip:{ip}"
+    if rate_limited(ukey, 5, 900, hit=False) or rate_limited(ikey, 25, 900, hit=False):
+        return jsonify({"error": "Too many failed attempts. Wait 15 minutes and try again."}), 429
     db = get_db()
     # Login is case-insensitive on the username (so "admin" == "Admin").
     row = db.execute("SELECT * FROM users WHERE lower(username)=lower(?)", (username,)).fetchone()
-    if not row or row["password_hash"] != hash_pw(password):
+    if not row or not verify_pw(row["password_hash"], password):
+        rate_limited(ukey, 5, 900)
+        rate_limited(ikey, 25, 900)
         return jsonify({"error": "Invalid username or password."}), 401
+    rate_clear(ukey)
+    if pw_needs_upgrade(row["password_hash"]):          # upgrade old SHA-256 hashes
+        db.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_pw(password), row["id"]))
+        db.commit()
+    if row["totp_enabled"]:
+        session.clear()
+        session["pending_2fa"] = {"uid": row["id"], "at": time.time()}
+        return jsonify({"need_2fa": True})
+    session.clear()
     session["uid"] = row["id"]
     return jsonify({"user": user_public(dict(row))})
+
+
+@app.route("/api/login/2fa", methods=["POST"])
+def api_login_2fa():
+    """Second login step: 6-digit authenticator code or a one-time recovery code."""
+    pend = session.get("pending_2fa") or {}
+    if not pend or time.time() - float(pend.get("at", 0)) > 300:
+        session.pop("pending_2fa", None)
+        return jsonify({"error": "Your login timed out. Enter your username and password again."}), 401
+    key = f"2fa:{pend['uid']}"
+    if rate_limited(key, 6, 900, hit=False):
+        return jsonify({"error": "Too many wrong codes. Wait 15 minutes and log in again."}), 429
+    db = get_db()
+    row = db.execute("SELECT * FROM users WHERE id=?", (pend["uid"],)).fetchone()
+    code = ((request.get_json(force=True) or {}).get("code") or "").strip()
+    ok = bool(row) and totp_verify(dec(row["totp_secret"]), code)
+    if row and not ok and code:
+        codes = _jl(row["recovery_codes"], [])
+        h = hashlib.sha256(code.replace("-", "").replace(" ", "").lower().encode()).hexdigest()
+        if h in codes:
+            codes.remove(h)
+            db.execute("UPDATE users SET recovery_codes=? WHERE id=?", (json.dumps(codes), row["id"]))
+            db.commit()
+            ok = True
+            log_activity(db, dict(row), "2fa_recovery_used", "user", row["id"], f"{len(codes)} codes left")
+    if not ok:
+        rate_limited(key, 6, 900)
+        return jsonify({"error": "That code isn't right. Check your authenticator app and try again."}), 401
+    rate_clear(key)
+    session.clear()
+    session["uid"] = row["id"]
+    return jsonify({"user": user_public(dict(row))})
+
+
+@app.route("/api/2fa/setup", methods=["POST"])
+def api_2fa_setup():
+    """Start enabling 2FA: a new secret + QR code for the authenticator app."""
+    u = require_login()
+    db = get_db()
+    secret = totp_new_secret()
+    db.execute("UPDATE users SET totp_pending=? WHERE id=?", (enc(secret), u["id"]))
+    db.commit()
+    issuer = urllib.parse.quote(os.environ.get("COMPANY_NAME") or "SocialPlatform")
+    uri = (f"otpauth://totp/{issuer}:{urllib.parse.quote(u['username'])}?secret={secret}"
+           f"&issuer={issuer}&digits=6&period=30")
+    svg = ""
+    try:
+        import qrcode
+        import qrcode.image.svg
+        img = qrcode.make(uri, image_factory=qrcode.image.svg.SvgPathImage, box_size=8)
+        svg = img.to_string(encoding="unicode")
+    except Exception:
+        svg = ""
+    return jsonify({"secret": secret, "otpauth": uri, "qr_svg": svg})
+
+
+@app.route("/api/2fa/enable", methods=["POST"])
+def api_2fa_enable():
+    u = require_login()
+    db = get_db()
+    code = ((request.get_json(force=True) or {}).get("code") or "").strip()
+    pending = dec(u.get("totp_pending") or "")
+    if not pending or not totp_verify(pending, code):
+        return jsonify({"error": "That code doesn't match. Scan the QR code again and enter the current 6-digit code."}), 400
+    plain = ["-".join([secrets.token_hex(2), secrets.token_hex(2)]) for _ in range(8)]
+    hashed = [hashlib.sha256(c.replace("-", "").encode()).hexdigest() for c in plain]
+    db.execute("UPDATE users SET totp_secret=?, totp_pending=NULL, totp_enabled=1, recovery_codes=? WHERE id=?",
+               (enc(pending), json.dumps(hashed), u["id"]))
+    db.commit()
+    log_activity(db, u, "2fa_enabled", "user", u["id"], "")
+    return jsonify({"ok": True, "recovery_codes": plain})
+
+
+@app.route("/api/2fa/disable", methods=["POST"])
+def api_2fa_disable():
+    u = require_login()
+    db = get_db()
+    d = request.get_json(force=True) or {}
+    if not verify_pw(u["password_hash"], d.get("password") or ""):
+        return jsonify({"error": "Your password is incorrect."}), 400
+    if not totp_verify(dec(u.get("totp_secret") or ""), d.get("code") or ""):
+        return jsonify({"error": "Enter the current 6-digit code from your authenticator app."}), 400
+    db.execute("UPDATE users SET totp_secret=NULL, totp_pending=NULL, totp_enabled=0, recovery_codes=NULL "
+               "WHERE id=?", (u["id"],))
+    db.commit()
+    log_activity(db, u, "2fa_disabled", "user", u["id"], "")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/users/<int:uid>/2fa/reset", methods=["POST"])
+def api_2fa_reset(uid):
+    """SuperAdmin (any user) or a primary account (its Sub-Users) turns 2FA off
+    for someone who lost their phone."""
+    u = require_login()
+    db = get_db()
+    tgt = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    if not tgt or not (is_super(u) or (tgt["parent_id"] == u["id"] and is_primary_user(u))):
+        return jsonify({"error": "Not allowed."}), 403
+    db.execute("UPDATE users SET totp_secret=NULL, totp_pending=NULL, totp_enabled=0, recovery_codes=NULL "
+               "WHERE id=?", (uid,))
+    db.commit()
+    log_activity(db, u, "2fa_reset", "user", uid, tgt["username"])
+    return jsonify({"ok": True})
 
 
 @app.route("/api/logout", methods=["POST"])
@@ -1461,7 +1917,8 @@ def api_subusers():
         return jsonify({"ok": True, "subuser": _subuser_public(row)})
     rows = db.execute("SELECT * FROM users WHERE parent_id=? ORDER BY username", (u["id"],)).fetchall()
     # videos available to scope (this workspace's videos)
-    vids = db.execute("SELECT id, title FROM videos ORDER BY id DESC LIMIT 200").fetchall()
+    wq, wa = ws_sql(db, u)
+    vids = db.execute("SELECT id, title FROM videos WHERE 1=1" + wq + " ORDER BY id DESC LIMIT 200", wa).fetchall()
     return jsonify({
         "subusers": [_subuser_public(r) for r in rows],
         "controllable_tabs": [{"key": k, "label": lbl} for k, lbl in CONTROLLABLE_TABS],
@@ -1479,6 +1936,10 @@ def api_subuser_edit(sid):
     if not target:
         return jsonify({"error": "Sub-User not found."}), 404
     if request.method == "DELETE":
+        for tbl in ("calendar_items", "videos"):
+            db.execute(f"UPDATE {tbl} SET owner_id=?, owner=? WHERE owner_id=?", (u["id"], u["username"], sid))
+        db.execute("UPDATE content_items SET owner=? WHERE owner=?", (u["username"], target["username"]))
+        db.execute("DELETE FROM social_accounts WHERE user_id=?", (sid,))
         db.execute("DELETE FROM users WHERE id=?", (sid,))
         db.commit()
         return jsonify({"ok": True})
@@ -1576,7 +2037,7 @@ def api_oauth(provider):
         return jsonify({"error": "Unknown provider."}), 400
     if provider == "instagram":
         return jsonify({"error": "Connect Instagram from Setup using the real Instagram sign-in."}), 400
-    u = current_user()
+    u = require_login()
     db = get_db()
     d = request.get_json(silent=True) or {}
     # the account label the user is connecting (email for Google, @handle for IG)
@@ -1629,6 +2090,7 @@ SIGNIN_URLS = {
 @app.route("/api/oauth/<provider>/open", methods=["POST"])
 def api_oauth_open(provider):
     """Open the provider's real sign-in page in the PC's default browser."""
+    require_super()
     url = SIGNIN_URLS.get(provider)
     if not url:
         return jsonify({"error": "Unknown provider."}), 400
@@ -1643,6 +2105,7 @@ def api_oauth_open(provider):
 
 @app.route("/api/delete-test-accounts", methods=["POST"])
 def api_delete_tests():
+    require_super()
     db = get_db()
     # if you're logged in as a test account, log out first
     u = current_user()
@@ -1766,6 +2229,7 @@ def tool_detected(tool):
 
 @app.route("/api/tools")
 def api_tools():
+    require_login()
     is_win = platform.system() == "Windows"
     out = []
     for t in RECOMMENDED_TOOLS:
@@ -2016,6 +2480,7 @@ def _open_path(p):
 
 @app.route("/api/tools/<tool_id>/install", methods=["POST"])
 def api_install(tool_id):
+    require_super()                 # downloads & runs installers on the server machine
     tool = next((t for t in RECOMMENDED_TOOLS if t["id"] == tool_id), None)
     if not tool:
         return jsonify({"error": "Unknown tool."}), 404
@@ -2028,18 +2493,21 @@ def api_install(tool_id):
 
 @app.route("/api/tools/<tool_id>/cancel", methods=["POST"])
 def api_install_cancel(tool_id):
+    require_super()
     INSTALL_CANCEL[tool_id] = True
     return jsonify({"ok": True})
 
 
 @app.route("/api/tools/<tool_id>/status")
 def api_install_status(tool_id):
+    require_login()
     return jsonify(INSTALL_JOBS.get(tool_id, {"status": "idle", "percent": 0, "message": ""}))
 
 
 @app.route("/api/tools/<tool_id>/detect")
 def api_tool_detect(tool_id):
     """Re-run detection for a single tool now (the 'Check' button in Setup)."""
+    require_login()
     tool = next((t for t in RECOMMENDED_TOOLS if t["id"] == tool_id), None)
     if not tool:
         return jsonify({"error": "Unknown tool."}), 404
@@ -2057,7 +2525,8 @@ STATUS_LABEL = {"input": "Input", "processing": "Processing", "completed": "Comp
 def api_videos():
     u = require_login()
     db = get_db()
-    rows = db.execute("SELECT * FROM videos ORDER BY updated_at DESC").fetchall()
+    wq, wa = ws_sql(db, u)
+    rows = db.execute("SELECT * FROM videos WHERE 1=1" + wq + " ORDER BY updated_at DESC", wa).fetchall()
     counts = {s: 0 for s in STATUSES}
     admin_like = is_admin(u)
     can_dl = _user_can_download(u)
@@ -2143,18 +2612,18 @@ def api_add_video():
 
 
 def _google_user_for(db, u):
-    """Which Google account backs up an upload: the uploader's own if they have
-    one connected, else the workspace SuperAdmin's. Returns a user dict or None."""
+    """Which Google account backs up an upload: the uploader's own if connected,
+    else their workspace owner's. Never another client's Drive."""
     try:
         if u.get("google_token"):
             return u
     except Exception:
         pass
-    sa = _superadmin_row(db)
-    if sa:
-        sad = dict(sa)
-        if sad.get("google_token"):
-            return sad
+    ws = ws_owner_id(db, u.get("id"))
+    if ws and ws != u.get("id"):
+        row = db.execute("SELECT * FROM users WHERE id=?", (ws,)).fetchone()
+        if row and row["google_token"]:
+            return dict(row)
     return None
 
 
@@ -2223,12 +2692,14 @@ def api_download_access():
         if "grants" in d and isinstance(d["grants"], list):
             # set the full allow-list: these ids can download, everyone else can't
             ids = [int(x) for x in d["grants"]]
-            # An admin can never modify the SuperAdmin's access — protect that row
-            # from the reset. (The SuperAdmin always has access anyway.)
+            members = ws_member_ids(db, u)
+            if members is not None:
+                ids = [i for i in ids if i in members]
             if is_super(u):
                 db.execute("UPDATE users SET can_download=0")
-            else:
-                db.execute("UPDATE users SET can_download=0 WHERE role != 'superadmin'")
+            else:                  # only this client's own people are touched
+                db.execute(f"UPDATE users SET can_download=0 WHERE role != 'superadmin' AND id IN "
+                           f"({','.join('?' * len(members))})", members)
             if ids:
                 q = ",".join("?" * len(ids))
                 db.execute(f"UPDATE users SET can_download=1 WHERE id IN ({q})", ids)
@@ -2237,6 +2708,8 @@ def api_download_access():
             tgt_row = db.execute("SELECT role FROM users WHERE id=?", (int(d["user_id"]),)).fetchone()
             if tgt_row and (tgt_row["role"] == "superadmin") and not is_super(u):
                 return jsonify({"error": "You can't change the Super Admin's access."}), 403
+            if not in_ws(db, u, int(d["user_id"])):
+                return jsonify({"error": "User not found."}), 404
             allow = 1 if d.get("allow") else 0
             db.execute("UPDATE users SET can_download=? WHERE id=?", (allow, int(d["user_id"])))
             db.commit()
@@ -2248,8 +2721,9 @@ def api_download_access():
                                  recipients=owner_and_admins(db, int(d["user_id"])))
         return jsonify({"ok": True})
     # GET: list all users with their current access flag
+    wq, wa = ws_sql(db, u, "id")
     rows = db.execute("SELECT id, username, display_name, role, can_download "
-                      "FROM users ORDER BY username").fetchall()
+                      "FROM users WHERE 1=1" + wq + " ORDER BY username", wa).fetchall()
     users = [{"id": r["id"], "username": r["username"],
               "display_name": r["display_name"] or r["username"],
               "role": r["role"] or "user",
@@ -2280,11 +2754,14 @@ def api_approval_access():
         d = request.get_json(force=True)
         if "grants" in d and isinstance(d["grants"], list):
             ids = [int(x) for x in d["grants"]]
-            # An admin can never modify the SuperAdmin's access — protect that row.
+            members = ws_member_ids(db, u)
+            if members is not None:
+                ids = [i for i in ids if i in members]
             if is_super(u):
                 db.execute("UPDATE users SET can_approve=0")
-            else:
-                db.execute("UPDATE users SET can_approve=0 WHERE role != 'superadmin'")
+            else:                  # only this client's own people are touched
+                db.execute(f"UPDATE users SET can_approve=0 WHERE role != 'superadmin' AND id IN "
+                           f"({','.join('?' * len(members))})", members)
             if ids:
                 q = ",".join("?" * len(ids))
                 db.execute(f"UPDATE users SET can_approve=1 WHERE id IN ({q})", ids)
@@ -2293,6 +2770,8 @@ def api_approval_access():
             tgt_row = db.execute("SELECT role FROM users WHERE id=?", (int(d["user_id"]),)).fetchone()
             if tgt_row and (tgt_row["role"] == "superadmin") and not is_super(u):
                 return jsonify({"error": "You can't change the Super Admin's access."}), 403
+            if not in_ws(db, u, int(d["user_id"])):
+                return jsonify({"error": "User not found."}), 404
             allow = 1 if d.get("allow") else 0
             db.execute("UPDATE users SET can_approve=? WHERE id=?", (allow, int(d["user_id"])))
             db.commit()
@@ -2303,8 +2782,9 @@ def api_approval_access():
                                  "info", u["username"],
                                  recipients=owner_and_admins(db, int(d["user_id"])))
         return jsonify({"ok": True})
+    wq, wa = ws_sql(db, u, "id")
     rows = db.execute("SELECT id, username, display_name, role, can_approve "
-                      "FROM users ORDER BY username").fetchall()
+                      "FROM users WHERE 1=1" + wq + " ORDER BY username", wa).fetchall()
     users = [{"id": r["id"], "username": r["username"],
               "display_name": r["display_name"] or r["username"],
               "role": r["role"] or "user",
@@ -2382,9 +2862,10 @@ def api_update_video(vid):
 @app.route("/api/reports")
 def api_reports():
     """All videos with deadline vs. completion performance (for the Reports page)."""
-    require_login()
+    u = require_login()
     db = get_db()
-    rows = db.execute("SELECT * FROM videos ORDER BY created_at DESC").fetchall()
+    wq, wa = ws_sql(db, u)
+    rows = db.execute("SELECT * FROM videos WHERE 1=1" + wq + " ORDER BY created_at DESC", wa).fetchall()
     out = []
     completed = 0
     for r in rows:
@@ -2535,10 +3016,12 @@ def api_calendar():
     u = require_login()
     db = get_db()
     brand = _rget(u, "active_brand_id")
+    wq, wa = ws_sql(db, u)
     if brand:
-        rows = db.execute("SELECT * FROM calendar_items WHERE brand_id=? ORDER BY date ASC, id ASC", (brand,)).fetchall()
+        rows = db.execute("SELECT * FROM calendar_items WHERE brand_id=?" + wq + " ORDER BY date ASC, id ASC",
+                          [brand] + wa).fetchall()
     else:
-        rows = db.execute("SELECT * FROM calendar_items ORDER BY date ASC, id ASC").fetchall()
+        rows = db.execute("SELECT * FROM calendar_items WHERE 1=1" + wq + " ORDER BY date ASC, id ASC", wa).fetchall()
     today = datetime.now().strftime("%Y-%m-%d")
     targets = _targets_for(db, [r["id"] for r in rows])
     items = []
@@ -2649,7 +3132,15 @@ def _run_generation(cid, video_path, original_name, user_id=""):
     GEN_JOBS[cid] = {"status": "running", "percent": 5, "message": "Preparing…"}
     task_update(tid, percent=5, message="Preparing…")
     try:
-        title, cap, tags = generate_caption(video_path, original_name, progress=_prog)
+        kit = None
+        try:
+            _db = db_connect()
+            _r = _db.execute("SELECT owner_id, brand_id FROM calendar_items WHERE id=?", (cid,)).fetchone()
+            kit = kit_for_owner(_db, _r["owner_id"], _r["brand_id"]) if _r else None
+            _db.close()
+        except Exception:
+            kit = None
+        title, cap, tags = generate_caption(video_path, original_name, progress=_prog, kit=kit)
         db = db_connect()
         if title:
             db.execute("UPDATE calendar_items SET title=?, caption=?, hashtags=? WHERE id=?",
@@ -2697,6 +3188,7 @@ def api_calendar_generate(cid):
 
 @app.route("/api/calendar/<int:cid>/genstatus")
 def api_calendar_genstatus(cid):
+    require_login()
     return jsonify(GEN_JOBS.get(cid, {"status": "idle", "percent": 0, "message": ""}))
 
 
@@ -2843,11 +3335,22 @@ def _public_media_url(db, fname):
     return f"{base}/uploads/{urllib.parse.quote(fname)}" if base.startswith("https://") else ""
 
 
-def _caption_for(row, platform):
+def _caption_for(row, platform, db=None):
+    """Caption for one platform. With `db`, a website link on the post becomes a
+    UTM-tracked short link: it replaces {link}, or is appended (except Instagram,
+    where caption links aren't clickable — use the link-in-bio page there)."""
     pc = _jl(_rget(row, "platform_captions"), {})
     if (pc.get(platform) or "").strip():
-        return pc[platform].strip()
-    return ((row["caption"] or "") + "\n\n" + (row["hashtags"] or "")).strip()
+        text = pc[platform].strip()
+    else:
+        text = ((row["caption"] or "") + "\n\n" + (row["hashtags"] or "")).strip()
+    if (_rget(row, "link_url") or "").strip():
+        short = post_link(db, row, platform) if db is not None else "https://example.com/r/xxxxxxx"
+        if "{link}" in text:
+            text = text.replace("{link}", "link in bio" if platform == "instagram" else short)
+        elif platform != "instagram":
+            text = (text + "\n\n" + short).strip()
+    return text.replace("{link}", "")
 
 
 def _allowed_platforms(u):
@@ -2859,8 +3362,16 @@ def _allowed_platforms(u):
 
 
 # ---- connected accounts --------------------------------------------------- #
+def _decrypt_account(a):
+    a = dict(a)
+    a["token"] = dec(a.get("token"))
+    a["refresh_token"] = dec(a.get("refresh_token"))
+    a["extra"] = dec(a.get("extra")) if isinstance(a.get("extra"), str) else a.get("extra")
+    return a
+
+
 def _account_for_user(db, uid, platform, brand_id=None):
-    rows = [dict(r) for r in db.execute(
+    rows = [_decrypt_account(r) for r in db.execute(
         "SELECT * FROM social_accounts WHERE user_id=? AND platform=? ORDER BY id DESC", (uid, platform)).fetchall()]
     for r in rows:
         if brand_id and r.get("brand_id") == brand_id:
@@ -2875,10 +3386,8 @@ def _hydrate_account(db, acct):
     """Attach the owner's app credentials (needed for token refresh)."""
     if not acct:
         return None
-    a = dict(acct)
-    ik, sk = CRED_KEYS[a["platform"]]
-    a["app_id"] = uget_setting(db, a["user_id"], ik)
-    a["app_secret"] = uget_setting(db, a["user_id"], sk)
+    a = _decrypt_account(acct)
+    a["app_id"], a["app_secret"], _src = app_creds(db, a["user_id"], a["platform"])
     a["extra"] = _jl(a.get("extra"), {})
     return a
 
@@ -2888,26 +3397,26 @@ def _legacy_account(db, uid, platform):
     if platform != "instagram" or not uid:
         return None
     row = db.execute("SELECT ig_token, ig_user_id, ig_username FROM users WHERE id=?", (uid,)).fetchone()
-    if row and row["ig_token"]:
+    if row and dec(row["ig_token"]):
         return {"id": None, "user_id": uid, "platform": "instagram", "account_id": row["ig_user_id"] or "",
-                "account_name": row["ig_username"] or "", "token": row["ig_token"], "refresh_token": "",
+                "account_name": row["ig_username"] or "", "token": dec(row["ig_token"]), "refresh_token": "",
                 "expires_at": None, "extra": "{}", "mode": "live", "brand_id": None}
     return None
 
 
 def _publish_account(db, row, platform):
     """The account a calendar item publishes from: its owner's (matching brand),
-    else the workspace SuperAdmin's. None → simulated publish."""
+    else another account connected in the SAME workspace. Never another client's."""
     brand = _rget(row, "brand_id")
     cands = []
     if _rget(row, "owner_id"):
         cands.append(row["owner_id"])
-        prow = db.execute("SELECT parent_id FROM users WHERE id=?", (row["owner_id"],)).fetchone()
-        if prow and prow["parent_id"]:
-            cands.append(prow["parent_id"])
-    sa = _superadmin_row(db)
-    if sa:
-        cands.append(sa["id"])
+        ws = ws_owner_id(db, row["owner_id"])
+        if ws and ws not in cands:
+            cands.append(ws)
+        for r in db.execute("SELECT id FROM users WHERE parent_id=?", (ws,)).fetchall():
+            if r["id"] not in cands:
+                cands.append(r["id"])
     for uid in cands:
         a = _account_for_user(db, uid, platform, brand) or _legacy_account(db, uid, platform)
         if a and a.get("mode") == "live" and a.get("token"):
@@ -2919,8 +3428,8 @@ def _save_account(db, uid, platform, info, mode="live", brand_id=None):
     now = _now()
     ex = db.execute("SELECT id FROM social_accounts WHERE user_id=? AND platform=? AND COALESCE(brand_id,0)=?",
                     (uid, platform, brand_id or 0)).fetchone()
-    vals = (info.get("account_id", ""), info.get("account_name", ""), info.get("token", ""),
-            info.get("refresh_token", ""), info.get("expires_at"), json.dumps(info.get("extra") or {}),
+    vals = (info.get("account_id", ""), info.get("account_name", ""), enc(info.get("token", "")),
+            enc(info.get("refresh_token", "")), info.get("expires_at"), enc(json.dumps(info.get("extra") or {})),
             mode, "ok", "", now)
     if ex:
         db.execute("UPDATE social_accounts SET account_id=?, account_name=?, token=?, refresh_token=?, "
@@ -2933,7 +3442,7 @@ def _save_account(db, uid, platform, info, mode="live", brand_id=None):
     if platform in LEGACY_COLS:
         c, acol, tcol, icol = LEGACY_COLS[platform]
         db.execute(f"UPDATE users SET {c}=1, {acol}=?, {tcol}=?, {icol}=? WHERE id=?",
-                   (info.get("account_name", ""), info.get("token", "") if mode == "live" else "",
+                   (info.get("account_name", ""), enc(info.get("token", "")) if mode == "live" else "",
                     info.get("account_id", ""), uid))
         if platform == "instagram":
             db.execute("UPDATE users SET instagram_account=? WHERE id=?", (info.get("account_name", ""), uid))
@@ -2956,7 +3465,7 @@ def _ensure_fresh(db, a):
             a.update(upd)
             db.execute("UPDATE social_accounts SET token=?, refresh_token=?, expires_at=?, status='ok', "
                        "last_error='', updated_at=? WHERE id=?",
-                       (a["token"], a.get("refresh_token", ""), a.get("expires_at"), _now(), a["id"]))
+                       (enc(a["token"]), enc(a.get("refresh_token", "")), a.get("expires_at"), _now(), a["id"]))
             db.commit()
     return a
 
@@ -3140,7 +3649,7 @@ def _job_publish(job):
             db.commit()
             return None
         platform = t["platform"]
-        text = _caption_for(row, platform)
+        text = _caption_for(row, platform, db)
         tags = [w for w in (row["hashtags"] or "").split() if w.startswith("#")]
         opts = {"post_type": (row["content_type"] or "reel"), "title": _rget(row, "yt_title") or row["title"],
                 "privacy": _rget(row, "yt_privacy") or "public", "tags": tags}
@@ -3277,6 +3786,10 @@ def _file_in_use(db, fname, exclude_id):
     like = f'%"{fname}"%'
     r = db.execute("SELECT 1 FROM calendar_items WHERE id<>? AND (filename=? OR thumbnail=? OR media LIKE ? "
                    "OR variants LIKE ?) LIMIT 1", (exclude_id, fname, fname, like, like)).fetchone()
+    if r is None:           # the content library, brand kits and bio pages can reference files too
+        r = db.execute("SELECT 1 FROM library_items WHERE filename=? LIMIT 1", (fname,)).fetchone() or \
+            db.execute("SELECT 1 FROM brand_kits WHERE logo=? LIMIT 1", (fname,)).fetchone() or \
+            db.execute("SELECT 1 FROM bio_pages WHERE avatar=? LIMIT 1", (fname,)).fetchone()
     return r is not None
 
 
@@ -3516,7 +4029,7 @@ def _check_token_health():
             if upd:
                 db.execute("UPDATE social_accounts SET token=?, refresh_token=?, expires_at=?, status='ok', "
                            "last_error='', updated_at=? WHERE id=?",
-                           (upd["token"], upd.get("refresh_token", a.get("refresh_token") or ""),
+                           (enc(upd["token"]), enc(upd.get("refresh_token", a.get("refresh_token") or "")),
                             upd.get("expires_at"), _now(), a["id"]))
                 db.commit()
                 continue
@@ -3595,6 +4108,7 @@ def format_checks(db, row):
     info = None
     if kind == "video" and files:
         info = _probe(os.path.join(UPLOAD_DIR, files[0]))
+    kit = kit_for_owner(db, row["owner_id"], _rget(row, "brand_id")) if row["owner_id"] else None
     for p in _item_platforms(row):
         spec, lab = P.PLATFORMS[p], P.PLATFORMS[p]["label"]
 
@@ -3609,6 +4123,9 @@ def format_checks(db, row):
         if kind == "carousel" and len(files) > spec.get("carousel_max", 10):
             add("error", f"{lab} allows at most {spec.get('carousel_max', 10)} items in a carousel.")
         cap = _caption_for(row, p)
+        bad = banned_words_in(cap, kit)
+        if bad:
+            add("error", f"Caption uses words your brand kit bans: {', '.join(bad)}.")
         if len(cap) > spec["caption_max"]:
             add("error", f"Caption is {len(cap)} characters; {lab} allows {spec['caption_max']}.", "adapt")
         ntags = len([w for w in cap.split() if w.startswith("#")])
@@ -3716,8 +4233,10 @@ def _rule_adapt(caption, hashtags, platform):
     return (body + ("\n\n" + tag_str if tag_str else "")).strip()
 
 
-def adapt_captions(row, plats):
+def adapt_captions(row, plats, kit=None):
     caption, hashtags = (row["caption"] or ""), (row["hashtags"] or "")
+    if kit and (kit.get("default_hashtags") or "").strip():
+        hashtags = " ".join(_merge_hashtags(kit["default_hashtags"], hashtags, cap=30))
     key, model = _claude_creds()
     result, source = {}, "rules"
     if key and (caption or hashtags):
@@ -3726,7 +4245,8 @@ def adapt_captions(row, plats):
         prompt = (
             "You adapt one social media post for several platforms.\n"
             f"TITLE: {row['title']}\nMASTER CAPTION: {caption}\nHASHTAGS: {hashtags}\n"
-            f"GUIDELINES FROM THE ACCOUNT OWNER: {_content_guidelines_bg() or 'none'}\n\n"
+            f"GUIDELINES FROM THE ACCOUNT OWNER: {_content_guidelines_bg() or 'none'}\n"
+            f"{kit_prompt(kit)}\n\n"
             f"Write one caption per platform, following each style note:\n{spec_lines}\n"
             + ('Also write "youtube_title": a click-worthy title under 90 characters.\n' if "youtube" in plats else "")
             + "Keep the facts of the master caption; never invent claims. "
@@ -3750,12 +4270,12 @@ def adapt_captions(row, plats):
     return result, source
 
 
-def suggest_replies(comment_text, post_title, platform):
+def suggest_replies(comment_text, post_title, platform, kit=None):
     key, model = _claude_creds()
     sent = _sentiment(comment_text)
     if key:
         prompt = (f'You manage a brand\'s {P.PLATFORMS[platform]["label"]} account. A follower commented on the '
-                  f'post "{post_title}":\n"{comment_text}"\n\nWrite 3 short, warm, on-brand reply options '
+                  f'post "{post_title}":\n"{comment_text}"\n\n{kit_prompt(kit)}\nWrite 3 short, warm, on-brand reply options '
                   "(under 200 characters each, no hashtags). If the comment is negative, be empathetic and offer "
                   'help without arguing. Return STRICT JSON: {"replies": ["...", "...", "..."]}')
         try:
@@ -3798,11 +4318,16 @@ def _tzinfo(tz, offset_min):
     return timezone(timedelta(minutes=-int(offset_min or 0)))
 
 
-def best_times(db, tz, offset):
+def best_times(db, tz, offset, member_ids=None):
     zone = _tzinfo(tz, offset)
     out = {}
-    rows = db.execute("SELECT platform, published_at, views, likes, comments, shares, simulated FROM post_targets "
-                      "WHERE status='published' AND published_at IS NOT NULL").fetchall()
+    q = ("SELECT t.platform, t.published_at, t.views, t.likes, t.comments, t.shares, t.simulated FROM post_targets t "
+         "JOIN calendar_items c ON c.id=t.item_id WHERE t.status='published' AND t.published_at IS NOT NULL")
+    args = []
+    if member_ids is not None:
+        q += f" AND c.owner_id IN ({','.join('?' * len(member_ids))})"
+        args = member_ids
+    rows = db.execute(q, args).fetchall()
     by = {}
     for r in rows:
         if r["simulated"]:
@@ -3837,8 +4362,10 @@ def _next_queue_slot(db, owner_id, tz, offset, brand_id=None):
     if not slots:
         return None
     zone = _tzinfo(tz, offset)
+    members = [owner_id] + [r["id"] for r in db.execute("SELECT id FROM users WHERE parent_id=?", (owner_id,)).fetchall()]
     taken = {r["publish_at"][:16] for r in db.execute(
-        "SELECT publish_at FROM calendar_items WHERE publish_at IS NOT NULL AND state<>'published'").fetchall()
+        "SELECT publish_at FROM calendar_items WHERE publish_at IS NOT NULL AND state<>'published' "
+        f"AND owner_id IN ({','.join('?' * len(members))})", members).fetchall()
         if r["publish_at"]}
     now_local = datetime.now(zone)
     for day in range(0, 70):
@@ -3874,11 +4401,19 @@ def _apply_queue(db, row, u, tz, offset):
 
 
 # ---- analytics ------------------------------------------------------------------ #
-def analytics_data(db, days=30, brand_id=None, platform=None):
-    since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+def analytics_data(db, days=30, brand_id=None, platform=None, member_ids=None, start=None, end=None):
+    """member_ids=None → every workspace (SuperAdmin); else only those owners' posts.
+    start/end (ISO dates) override `days` for calendar-month reports."""
+    since = start or (datetime.utcnow() - timedelta(days=days)).isoformat()
     q = ("SELECT t.*, c.title, c.brand_id, c.content_type, c.media_kind FROM post_targets t "
          "JOIN calendar_items c ON c.id=t.item_id WHERE t.status='published' AND t.published_at>=?")
     args = [since]
+    if end:
+        q += " AND t.published_at<?"
+        args.append(end)
+    if member_ids is not None:
+        q += f" AND c.owner_id IN ({','.join('?' * len(member_ids))})"
+        args += member_ids
     if brand_id:
         q += " AND c.brand_id=?"
         args.append(brand_id)
@@ -4013,7 +4548,10 @@ def _weekly_reports():
             uid = int(m.group(1))
             if uget_setting(db, uid, "report_sent_week") == week:
                 continue
-            data = analytics_data(db, 7)
+            urow = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+            if not urow:
+                continue
+            data = analytics_data(db, 7, member_ids=ws_member_ids(db, dict(urow)))
             pdf = build_report_pdf(data, "Weekly social report").getvalue()
             ok, _ = send_email(db, to, "Your weekly social media report",
                                f"Attached: performance for the last 7 days — {data['sum']['posts']} posts, "
@@ -4100,8 +4638,9 @@ def api_published():
     db = get_db()
     u = current_user()
     brand = _rget(u, "active_brand_id") if u else None
-    rows = db.execute("SELECT * FROM calendar_items WHERE state='published' "
-                      "ORDER BY published_date DESC, id DESC").fetchall()
+    wq, wa = ws_sql(db, u)
+    rows = db.execute("SELECT * FROM calendar_items WHERE state='published'" + wq +
+                      " ORDER BY published_date DESC, id DESC", wa).fetchall()
     if brand:
         rows = [r for r in rows if r["brand_id"] == brand]
     targets = _targets_for(db, [r["id"] for r in rows])
@@ -4140,17 +4679,10 @@ def _record_comment(db, item_id, title, commenter, text, like_count, ig_comment_
 def _ig_creds_for_item(db, row):
     """Resolve the Instagram token+user for a published item: the ORIGINAL
     owner's connected account first, else the app-level settings."""
-    owner_id = row["owner_id"] if ("owner_id" in row.keys() and row["owner_id"]) else None
-    if owner_id:
-        o = db.execute("SELECT ig_token, ig_user_id FROM users WHERE id=?", (owner_id,)).fetchone()
-        if o and o["ig_token"]:
-            return o["ig_token"], (o["ig_user_id"] or "")
-    # workspace fallback: the SuperAdmin's connected Instagram
-    sa = _superadmin_row(db)
-    if sa and dict(sa).get("ig_token"):
-        sad = dict(sa)
-        return sad["ig_token"], (sad.get("ig_user_id") or "")
-    return get_setting(db, "ig_token"), get_setting(db, "ig_user_id")
+    a = _publish_account(db, row, "instagram")
+    if a:
+        return a["token"], a.get("account_id") or ""
+    return "", ""
 
 
 @app.route("/api/published/<int:cid>/refresh", methods=["POST"])
@@ -4239,7 +4771,7 @@ def api_published_simulate(cid):
 
 @app.route("/api/settings/instagram", methods=["GET", "POST"])
 def api_ig_settings():
-    require_login()
+    require_super()
     db = get_db()
     if request.method == "POST":
         d = request.get_json(force=True)
@@ -4257,9 +4789,12 @@ def api_ig_settings():
 
 @app.route("/api/settings/model", methods=["GET", "POST"])
 def api_model_setting():
-    """Get/set the ollama vision model used for video analysis (pre-login OK)."""
+    """Get/set the ollama vision model used for video analysis."""
+    u = require_login()
     db = get_db()
     if request.method == "POST":
+        if not is_super(u):
+            return jsonify({"error": "Only the SuperAdmin can change the AI model."}), 403
         d = request.get_json(force=True)
         set_setting(db, "ollama_model", (d.get("model") or "").strip())
         return jsonify({"ok": True})
@@ -4365,9 +4900,14 @@ def api_content_test():
 
 @app.route("/api/content")
 def api_content_list():
-    require_login()
+    u = require_login()
     db = get_db()
-    rows = db.execute("SELECT * FROM content_items ORDER BY id DESC LIMIT 50").fetchall()
+    names = ws_usernames(db, u)
+    if names is None:
+        rows = db.execute("SELECT * FROM content_items ORDER BY id DESC LIMIT 50").fetchall()
+    else:
+        rows = db.execute(f"SELECT * FROM content_items WHERE owner IN ({','.join('?' * len(names))}) "
+                          "ORDER BY id DESC LIMIT 50", names).fetchall()
     return jsonify({"items": [dict(r) for r in rows]})
 
 
@@ -4738,7 +5278,8 @@ def api_content_generate():
         return jsonify({"error": "The AI API key isn't configured yet. Ask your "
                                  "SuperAdmin to add it in the Connect → Credentials area."}), 400
     model = get_setting(db, "claude_model") or DEFAULT_CLAUDE_MODEL
-    guidelines = get_setting(db, "content_guidelines") or ""
+    guidelines = "\n".join(x for x in (get_setting(db, "content_guidelines") or "",
+                                       kit_prompt(kit_for_owner(db, u["id"], _rget(u, "active_brand_id")))) if x)
     job_id = "content_" + secrets.token_hex(4)
     CONTENT_JOBS[job_id] = {"status": "starting", "percent": 0, "message": "Starting…"}
     threading.Thread(target=_run_content_generation,
@@ -4790,6 +5331,12 @@ def api_calendar_edit(cid):
     for k in ("yt_title", "yt_privacy"):
         if k in d:
             db.execute(f"UPDATE calendar_items SET {k}=? WHERE id=?", ((d.get(k) or "").strip() or None, cid))
+    for k in ("link_url", "link_campaign"):
+        if k in d:
+            v = (d.get(k) or "").strip()
+            if k == "link_url" and v and not re.match(r"^https?://", v):
+                return jsonify({"error": "The website link must start with https://"}), 400
+            db.execute(f"UPDATE calendar_items SET {k}=? WHERE id=?", (v or None, cid))
     if "recycle_days" in d:
         try:
             rd = int(d.get("recycle_days") or 0)
@@ -5086,6 +5633,7 @@ def _ensure_ai_model():
 @app.route("/api/aimodel/ensure", methods=["POST"])
 def api_aimodel_ensure():
     """Kick off (or re-check) the background 'make the AI Model ready' job."""
+    require_login()
     if not _ollama_installed():
         AIMODEL_JOB.update({"status": "not_installed", "percent": 0,
                             "message": "AI Model is not installed yet — install it from Setup."})
@@ -5097,6 +5645,7 @@ def api_aimodel_ensure():
 
 @app.route("/api/aimodel/status")
 def api_aimodel_status():
+    require_login()
     return jsonify(dict(AIMODEL_JOB,
                         installed=_ollama_installed(),
                         available=_ollama_available()))
@@ -5206,7 +5755,7 @@ def _claude_caption(frames, guidelines=""):
     return None
 
 
-def generate_caption(video_path, original_name, progress=None):
+def generate_caption(video_path, original_name, progress=None, kit=None):
     """
     Return (title, caption, hashtags). Analyses the REAL video content by
     sampling several frames and sending them to the Claude API (vision), so each
@@ -5230,7 +5779,8 @@ def generate_caption(video_path, original_name, progress=None):
             frames = []
     else:
         frames = _extract_frames(video_path, 3)
-    guidelines = _content_guidelines_bg()
+    guidelines = "\n".join(x for x in (_content_guidelines_bg(), kit_prompt(kit)) if x)
+    brand_tags = (kit or {}).get("default_hashtags") or ""
 
     # ---- Claude vision (online): analyse the actual frames and write content
     #      that follows the configured content-writing guidelines. ----------- #
@@ -5239,6 +5789,8 @@ def generate_caption(video_path, original_name, progress=None):
         res = _claude_caption(frames, guidelines)
         if res:
             rep(100, "Title, caption & hashtags ready.")
+            if brand_tags:
+                res = (res[0], res[1], " ".join(_merge_hashtags(brand_tags, res[2], cap=20)))
             return res
 
     # ---- Local fallback — VARIED per video (never identical) -------------- #
@@ -5275,6 +5827,8 @@ def generate_caption(video_path, original_name, progress=None):
     title    = TITLES[(seed & 0xFFFF) % len(TITLES)]
     caption  = CAPS[((seed >> 16) & 0xFFFF) % len(CAPS)]
     hashtags = TAGSETS[((seed >> 32) & 0xFFFF) % len(TAGSETS)]
+    if brand_tags:
+        hashtags = " ".join(_merge_hashtags(brand_tags, hashtags, cap=20))
     rep(100, "Caption & hashtags ready.")
     return title, caption, hashtags
 
@@ -5362,7 +5916,7 @@ def _http_json(url, data=None, headers=None, method=None, timeout=30):
 def _google_access_token(user):
     """Return a usable Google access token for this user (refreshing if needed)."""
     try:
-        tok = json.loads(user.get("google_token") or "{}")
+        tok = json.loads(dec(user.get("google_token")) or "{}")
     except Exception:
         tok = {}
     if not tok:
@@ -5385,7 +5939,7 @@ def _google_access_token(user):
             tok["expires_at"] = time.time() + int(res.get("expires_in", 3600))
             db = get_db()
             db.execute("UPDATE users SET google_token=? WHERE id=?",
-                       (json.dumps(tok), user["id"]))
+                       (enc(json.dumps(tok)), user["id"]))
             db.commit()
     return tok.get("access_token", "")
 
@@ -5569,7 +6123,7 @@ def api_task_cancel(tid):
     u = require_login()
     t = TASKS.get(tid)
     # only the task's owner (or an admin) may cancel it
-    if t and str(t.get("user") or "") != str(u["id"]) and not is_admin(u):
+    if t and str(t.get("user") or "") != str(u["id"]) and not is_super(u):
         return jsonify({"error": "You can only cancel your own tasks."}), 403
     TASKS_CANCEL[tid] = True
     task_mark_cancelled(tid, "Cancelled by user.")
@@ -5618,11 +6172,15 @@ def api_heartbeat():
 
 @app.route("/api/presence")
 def api_presence():
-    require_login()
+    me = require_login()
     db = get_db()
-    rows = db.execute("SELECT * FROM users ORDER BY username").fetchall()
+    ids = ws_member_ids(db, me)
+    if ids is None:
+        rows = db.execute("SELECT * FROM users ORDER BY username").fetchall()
+    else:                         # a client only sees the people in its own workspace
+        rows = db.execute(f"SELECT * FROM users WHERE id IN ({','.join('?' * len(ids))}) ORDER BY username",
+                          ids).fetchall()
     users, online = [], 0
-    me = current_user()
     can_manage = is_super(me)
     for r in rows:
         r = dict(r)
@@ -5719,7 +6277,7 @@ def api_change_user_password(uid):
     # SuperAdmin resetting someone else's does not.
     if is_self and not is_super_me:
         cur = d.get("current") or ""
-        if target["password_hash"] and target["password_hash"] != hash_pw(cur):
+        if target["password_hash"] and not verify_pw(target["password_hash"], cur):
             return jsonify({"error": "Your current password is incorrect."}), 400
     db.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_pw(newpw), uid))
     db.commit()
@@ -5808,6 +6366,8 @@ def api_logins():
             "google_account": r.get("google_email") or r.get("google_account") or "",
             "instagram_account": r.get("ig_username") or r.get("instagram_account") or "",
             "is_permanent": (r.get("role") in ("superadmin",)),
+            "parent_id": r.get("parent_id"),
+            "totp_enabled": bool(r.get("totp_enabled")),
             # SuperAdmin is always able to view credentials; others only if granted.
             "can_view_credentials": (r.get("role") == "superadmin")
                                     or bool(r.get("can_view_credentials")),
@@ -5854,12 +6414,8 @@ def _connections_payload(u):
       SuperAdmin's IG + Drive show up as 'Connected' in the Admin panel, and why
       Admins have no personal Gmail/Google login.
     """
-    view = u
-    manage = is_super(u)
-    if not manage:
-        sa = _superadmin_row(get_db())
-        if sa:
-            view = dict(sa)
+    view = u                    # everyone sees (and manages) only their own connections
+    manage = True
     google = {
         "connected": bool(view.get("google_connected")),
         "account": view.get("google_email") or view.get("google_account") or "",
@@ -5978,7 +6534,7 @@ def oauth_google_callback():
     name  = (info or {}).get("name", "") if ok2 else ""
     db.execute("UPDATE users SET google_connected=1, google_account=?, google_email=?, "
                "google_token=?, avatar=COALESCE(avatar,?) WHERE id=?",
-               (email or name, email, json.dumps(tok),
+               (email or name, email, enc(json.dumps(tok)),
                 (info or {}).get("picture", ""), uid))
     db.commit()
     # provision the Drive project folder now
@@ -6033,11 +6589,11 @@ def instagram_webhook():
 
 def _meta_app_secrets(db):
     """Every Meta app secret saved by any user (Instagram, Facebook, Threads)."""
-    rows = db.execute("SELECT value FROM settings WHERE key LIKE ? OR key LIKE ? OR key LIKE ?",
-                      ("u%_ig_app_secret", "u%_fb_app_secret", "u%_th_app_secret")).fetchall()
-    out = [r["value"] for r in rows if r["value"]]
+    rows = db.execute("SELECT value FROM settings WHERE key LIKE ? OR key LIKE ? OR key LIKE ? OR key LIKE ?",
+                      ("u%_ig_app_secret", "u%_fb_app_secret", "u%_th_app_secret", "plat_%_secret")).fetchall()
+    out = [dec(r["value"]) for r in rows if r["value"]]
     out += [v for v in (get_setting(db, "ig_app_secret"),) if v]
-    return out
+    return [v for v in out if v]
 
 
 def _meta_signature_ok(db, raw, header):
@@ -6062,6 +6618,11 @@ def _target_by_remote(db, platform, remote_id):
 def _handle_meta_webhook(db, payload):
     obj = payload.get("object")
     for entry in payload.get("entry", []) or []:
+        for mev in entry.get("messaging", []) or []:
+            try:
+                _ingest_webhook_dm(db, obj, mev)
+            except Exception:
+                pass
         for ch in entry.get("changes", []) or []:
             v = ch.get("value") or {}
             if obj == "instagram" and ch.get("field") in ("comments", "live_comments"):
@@ -6091,6 +6652,28 @@ def _handle_meta_webhook(db, payload):
                                                "text": v.get("message", ""),
                                                "parent": "" if par == v.get("post_id") else par,
                                                "created": _now()}])
+
+
+def _ingest_webhook_dm(db, obj, mev):
+    """A direct message arriving by webhook (Instagram "messages" / Page "messages")."""
+    platform = {"instagram": "instagram", "page": "facebook"}.get(obj)
+    msg = mev.get("message") or {}
+    if not platform or not (msg.get("text") and msg.get("mid")):
+        return
+    sender, recipient = str((mev.get("sender") or {}).get("id") or ""), str((mev.get("recipient") or {}).get("id") or "")
+    acc = db.execute("SELECT * FROM social_accounts WHERE platform=? AND mode='live' AND account_id IN (?,?)",
+                     (platform, sender, recipient)).fetchone()
+    if not acc:
+        return
+    acct = _decrypt_account(acc)
+    participant = recipient if sender == str(acct["account_id"]) else sender
+    prev = db.execute("SELECT participant_name FROM dm_messages WHERE account_id=? AND participant_id=? "
+                      "AND participant_name<>'' LIMIT 1", (acct["id"], participant)).fetchone()
+    ts = mev.get("timestamp")
+    created = datetime.utcfromtimestamp(int(ts) / 1000).isoformat() if ts else _now()
+    _store_dm(db, acct, participant, participant, prev["participant_name"] if prev else participant,
+              {"id": msg["mid"], "from_id": sender, "from_name": "", "text": msg["text"], "created": created})
+    db.commit()
 
 
 # ---- Legal pages required by Meta / Google / TikTok app review ----------------
@@ -6398,11 +6981,11 @@ def api_notification_replies(nid):
     return jsonify({"replies": out})
 
 
-def _notify_mentions(db, text, actor, link):
-    """Parse @username mentions and notify each mentioned user."""
+def _notify_mentions(db, text, actor, link, u=None):
+    """Parse @username mentions and notify each mentioned user (same workspace only)."""
     for uname in set(re.findall(r"@([A-Za-z0-9_.\-]+)", text or "")):
         row = db.execute("SELECT id, username FROM users WHERE lower(username)=lower(?)", (uname,)).fetchone()
-        if row:
+        if row and (u is None or in_ws(db, u, row["id"])):
             add_notification(db, f'💬 {actor} mentioned you: "{(text or "")[:80]}"',
                              "comment", actor, link=link, recipients=[row["id"]])
 
@@ -6429,7 +7012,7 @@ def api_add_notification_reply(nid):
     # a reply is a new update for everyone else — resurface it as unread
     db.execute("DELETE FROM notification_reads WHERE notification_id=? AND user_id<>?", (nid, u["id"]))
     db.commit()
-    _notify_mentions(db, text, u["username"], f"chat:{nid}")
+    _notify_mentions(db, text, u["username"], f"chat:{nid}", u)
     return jsonify({"ok": True})
 
 
@@ -6442,7 +7025,7 @@ def api_delete_reply(nid, rid):
                      (rid, nid)).fetchone()
     if not row:
         return jsonify({"error": "Not found."}), 404
-    if row["author_id"] != u["id"] and not is_admin(u):
+    if row["author_id"] != u["id"] and not (is_super(u) or (is_primary_user(u) and in_ws(db, u, row["author_id"]))):
         return jsonify({"error": "You can only delete your own messages."}), 403
     db.execute("DELETE FROM notification_replies WHERE id=?", (rid,))
     db.commit()
@@ -6457,8 +7040,12 @@ def api_delete_notification(nid):
     row = db.execute("SELECT * FROM notifications WHERE id=?", (nid,)).fetchone()
     if not row:
         return jsonify({"error": "Not found."}), 404
-    if not is_admin(u) and row["actor"] != u["username"]:
-        return jsonify({"error": "You can only delete chats you started."}), 403
+    if not is_super(u):
+        # clients remove it from their own list; the notification stays for others
+        db.execute("INSERT OR IGNORE INTO notification_hidden (notification_id, user_id) VALUES (?,?)",
+                   (nid, u["id"]))
+        db.commit()
+        return jsonify({"ok": True, "hidden": True})
     db.execute("DELETE FROM notifications WHERE id=?", (nid,))
     db.execute("DELETE FROM notification_replies WHERE notification_id=?", (nid,))
     db.execute("DELETE FROM notification_reads WHERE notification_id=?", (nid,))
@@ -6479,7 +7066,7 @@ def api_call_signal():
     u = require_login()
     d = request.get_json(force=True)
     to = int(d.get("to") or 0)
-    if not to:
+    if not to or not in_ws(get_db(), u, to):
         return jsonify({"error": "Missing target user."}), 400
     CALL_MAILBOX.setdefault(to, []).append({
         "from": u["id"], "from_name": u.get("display_name") or u["username"],
@@ -6515,13 +7102,18 @@ def api_notifications_bulk_delete():
     ids = [int(x) for x in ids]
     if not ids:
         return jsonify({"ok": True, "deleted": 0})
-    admin_like = is_admin(u)
+    admin_like = is_super(u)
     deleted = 0
     for nid in ids:
         row = db.execute("SELECT * FROM notifications WHERE id=?", (nid,)).fetchone()
         if not row:
             continue
-        if admin_like or row["actor"] == u["username"]:
+        if not admin_like:               # clients only hide it from their own list
+            db.execute("INSERT OR IGNORE INTO notification_hidden (notification_id, user_id) VALUES (?,?)",
+                       (nid, u["id"]))
+            deleted += 1
+            continue
+        if admin_like:
             db.execute("DELETE FROM notifications WHERE id=?", (nid,))
             db.execute("DELETE FROM notification_replies WHERE notification_id=?", (nid,))
             db.execute("DELETE FROM notification_reads WHERE notification_id=?", (nid,))
@@ -6588,7 +7180,7 @@ def api_chat_create():
     u = require_login()
     db = get_db()
     d = request.get_json(force=True)
-    member_ids = [int(x) for x in (d.get("member_ids") or [])]
+    member_ids = [int(x) for x in (d.get("member_ids") or []) if in_ws(db, u, int(x))]
     member_ids = list({*member_ids, u["id"]})           # always include me
     is_group = 1 if (d.get("is_group") or len(member_ids) > 2) else 0
     title = (d.get("title") or "").strip()
@@ -6619,13 +7211,14 @@ def _ensure_video_conversation(db, video_id, uid):
         cur = db.execute("INSERT INTO conversations (title, is_group, video_id, created_by, created_at) "
                          "VALUES (?,?,?,?,?)", ("", 1, video_id, uid, datetime.utcnow().isoformat()))
         cid = cur.lastrowid
-        # seed members: the video owner + all admins
+        # seed members: the video owner + its workspace owner + whoever opened it
         vrow = db.execute("SELECT owner_id FROM videos WHERE id=?", (video_id,)).fetchone()
         seed = set()
         if vrow and vrow["owner_id"]:
             seed.add(vrow["owner_id"])
-        for a in db.execute("SELECT id FROM users WHERE role IN ('admin','superadmin')").fetchall():
-            seed.add(a["id"])
+            ws = ws_owner_id(db, vrow["owner_id"])
+            if ws:
+                seed.add(ws)
         seed.add(uid)
         for m in seed:
             db.execute("INSERT OR IGNORE INTO conversation_members (conversation_id, user_id) VALUES (?,?)", (cid, m))
@@ -6698,7 +7291,7 @@ def api_chat_send(cid):
     # @-mentions -> add them to the chat + notify
     for uname in set(re.findall(r"@([A-Za-z0-9_.\-]+)", text or "")):
         mrow = db.execute("SELECT id, username FROM users WHERE lower(username)=lower(?)", (uname,)).fetchone()
-        if mrow:
+        if mrow and in_ws(db, u, mrow["id"]):          # can't pull other clients into a chat
             db.execute("INSERT OR IGNORE INTO conversation_members (conversation_id, user_id) VALUES (?,?)",
                        (cid, mrow["id"]))
             db.commit()
@@ -6715,7 +7308,7 @@ def api_chat_delete_message(mid):
     row = db.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone()
     if not row:
         return jsonify({"error": "Not found."}), 404
-    if row["author_id"] != u["id"] and not is_admin(u):
+    if row["author_id"] != u["id"] and not (is_super(u) or (is_primary_user(u) and in_ws(db, u, row["author_id"]))):
         return jsonify({"error": "You can only delete your own messages."}), 403
     db.execute("DELETE FROM messages WHERE id=?", (mid,))
     db.commit()
@@ -6725,10 +7318,11 @@ def api_chat_delete_message(mid):
 @app.route("/api/chat/inprogress-videos")
 def api_chat_inprogress():
     """Videos to offer for #referencing in chat (active = not completed)."""
-    require_login()
+    u = require_login()
     db = get_db()
-    rows = db.execute("SELECT id, title, status FROM videos WHERE status<>'completed' "
-                      "ORDER BY updated_at DESC LIMIT 50").fetchall()
+    wq, wa = ws_sql(db, u)
+    rows = db.execute("SELECT id, title, status FROM videos WHERE status<>'completed'" + wq +
+                      " ORDER BY updated_at DESC LIMIT 50", wa).fetchall()
     return jsonify({"videos": [dict(r) for r in rows]})
 
 
@@ -6754,7 +7348,8 @@ def _platform_status(db, u, key):
             "last_error": a.get("last_error") or "",
             "pages": [{"id": x["id"], "name": x.get("name")} for x in extra.get("pages", [])],
             "page_id": a.get("account_id") if key == "facebook" else "",
-            "boards": extra.get("boards", []), "board_id": extra.get("board_id", "")}
+            "boards": extra.get("boards", []), "board_id": extra.get("board_id", ""),
+            "imported_at": a.get("imported_at") or ""}
 
 
 @app.route("/api/platforms")
@@ -6766,12 +7361,19 @@ def api_platforms():
     for key in SOCIAL:
         spec = P.PLATFORMS[key]
         ik, sk = CRED_KEYS[key]
-        app_id = uget_setting(db, u["id"], ik) or ""
-        secret_set = bool(uget_setting(db, u["id"], sk))
+        platform_ready = bool(get_setting(db, f"plat_{key}_app_id") and get_setting(db, f"plat_{key}_app_secret"))
+        if is_super(u):            # the SuperAdmin edits the platform-wide app for everyone
+            app_id = get_setting(db, f"plat_{key}_app_id") or ""
+            secret_set = bool(get_setting(db, f"plat_{key}_app_secret"))
+        else:                      # a client may optionally bring their own app
+            app_id = uget_setting(db, u["id"], ik) or ""
+            secret_set = bool(uget_setting(db, u["id"], sk))
+        cid, csec, src = app_creds(db, u["id"], key)
         st = _platform_status(db, u, key)
         out.append(dict(st, **{
             "key": key, "label": spec["label"], "id_label": spec["id_label"], "secret_label": spec["secret_label"],
-            "app_id": app_id, "secret_set": secret_set, "installed": bool(app_id and secret_set),
+            "app_id": app_id, "secret_set": secret_set, "installed": bool(cid and csec),
+            "source": src, "platform_ready": platform_ready, "is_super": is_super(u),
             "redirect_uri": f"{base}/oauth/{key}/callback", "guide": _guide_url(key),
             "supports": spec["supports"], "caption_max": spec["caption_max"],
             "allowed": key in _allowed_platforms(u)}))
@@ -6789,10 +7391,16 @@ def api_platform_creds(plat):
     db = get_db()
     d = request.get_json(force=True) or {}
     ik, sk = CRED_KEYS[plat]
-    if "app_id" in d:
-        uset_setting(db, u["id"], ik, (d.get("app_id") or "").strip())
-    if d.get("app_secret"):
-        uset_setting(db, u["id"], sk, d["app_secret"].strip())
+    if is_super(u):                # platform-wide app: every client connects through it
+        if "app_id" in d:
+            set_setting(db, f"plat_{plat}_app_id", (d.get("app_id") or "").strip())
+        if d.get("app_secret"):
+            set_setting(db, f"plat_{plat}_app_secret", d["app_secret"].strip())
+    else:
+        if "app_id" in d:
+            uset_setting(db, u["id"], ik, (d.get("app_id") or "").strip())
+        if d.get("app_secret"):
+            uset_setting(db, u["id"], sk, d["app_secret"].strip())
     log_activity(db, u, "credentials_saved", "platform", None, P.PLATFORMS[plat]["label"])
     return jsonify({"ok": True})
 
@@ -6843,18 +7451,17 @@ def api_platform_option(plat):
         if not pg:
             return jsonify({"error": "Page not found."}), 404
         db.execute("UPDATE social_accounts SET account_id=?, account_name=?, token=? WHERE id=?",
-                   (pg["id"], pg.get("name", ""), pg.get("token", ""), a["id"]))
+                   (pg["id"], pg.get("name", ""), enc(pg.get("token", "")), a["id"]))
     elif plat == "pinterest" and d.get("board_id"):
         extra["board_id"] = d["board_id"]
-        db.execute("UPDATE social_accounts SET extra=? WHERE id=?", (json.dumps(extra), a["id"]))
+        db.execute("UPDATE social_accounts SET extra=? WHERE id=?", (enc(json.dumps(extra)), a["id"]))
     db.commit()
     return jsonify({"ok": True})
 
 
 def _social_connect_start(u, provider):
     db = get_db()
-    ik, sk = CRED_KEYS[provider]
-    cid, secret = uget_setting(db, u["id"], ik), uget_setting(db, u["id"], sk)
+    cid, secret, _src = app_creds(db, u["id"], provider)
     if cid and secret:
         state = secrets.token_urlsafe(16)
         verifier, challenge = P.pkce_pair()
@@ -6863,7 +7470,10 @@ def _social_connect_start(u, provider):
         url = P.oauth_url(provider, cid, f"{_redirect_base()}/oauth/{provider}/callback", state, challenge)
         return jsonify({"mode": "live", "auth_url": url})
     label = P.PLATFORMS[provider]["label"]
-    return jsonify({"error": f"Add your {label} App ID and Secret first (see the Guide), then click Connect."}), 400
+    if is_super(u):
+        return jsonify({"error": f"Add the {label} App ID and Secret first (see the Guide), then click Connect."}), 400
+    return jsonify({"error": f"{label} isn't set up on this workspace yet. Ask your administrator, "
+                             f"or add your own {label} app credentials."}), 400
 
 
 def _social_oauth_callback(platform_key):
@@ -6882,9 +7492,9 @@ def _social_oauth_callback(platform_key):
     if not code or not st:
         return _oauth_popup_close(f"{label} connection failed (session expired). Please try again.")
     uid = int(st["uid"])
-    ik, sk = CRED_KEYS[platform_key]
+    cid_, sec_, _src = app_creds(db, uid, platform_key)
     try:
-        info = P.exchange_code(platform_key, uget_setting(db, uid, ik), uget_setting(db, uid, sk), code,
+        info = P.exchange_code(platform_key, cid_, sec_, code,
                                f"{_redirect_base()}/oauth/{platform_key}/callback", st.get("verifier"))
     except P.PlatformError as e:
         return _oauth_popup_close(f"Could not complete {label} sign-in. {e}")
@@ -6892,6 +7502,10 @@ def _social_oauth_callback(platform_key):
         return _oauth_popup_close(f"Could not complete {label} sign-in. {e}")
     _save_account(db, uid, platform_key, info, mode="live", brand_id=st.get("brand"))
     set_setting(db, f"oauth_state_{state}", "")
+    acc = db.execute("SELECT id FROM social_accounts WHERE user_id=? AND platform=? ORDER BY id DESC LIMIT 1",
+                     (uid, platform_key)).fetchone()
+    if acc:                 # pull in past posts, stats and messages in the background
+        threading.Thread(target=_bg_import_and_snapshot, args=(acc["id"],), daemon=True).start()
     urow = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
     log_activity(db, dict(urow) if urow else None, "connected", "platform", None,
                  f"{label} ({info.get('account_name', '')})")
@@ -7030,7 +7644,7 @@ def api_calendar_adapt(cid):
     plats = [p for p in (d.get("platforms") or _item_platforms(row)) if p in SOCIAL]
     if not ((row["caption"] or "").strip() or (row["hashtags"] or "").strip()):
         return jsonify({"error": "Write (or generate) the master caption first."}), 400
-    result, source = adapt_captions(row, plats)
+    result, source = adapt_captions(row, plats, kit_for_owner(db, row["owner_id"], row["brand_id"]))
     yt_title = result.pop("_youtube_title", None)
     pc = _jl(_rget(row, "platform_captions"), {})
     pc.update(result)
@@ -7083,8 +7697,9 @@ def api_queue_fill():
     u = require_login()
     db = get_db()
     d = request.get_json(silent=True) or {}
+    wq, wa = ws_sql(db, u)
     rows = db.execute("SELECT * FROM calendar_items WHERE approved=1 AND state='approved' "
-                      "AND (publish_at IS NULL OR publish_at='') ORDER BY id").fetchall()
+                      "AND (publish_at IS NULL OR publish_at='')" + wq + " ORDER BY id", wa).fetchall()
     placed = []
     for r in rows:
         slot = _apply_queue(db, r, u, d.get("tz"), d.get("offset"))
@@ -7127,8 +7742,10 @@ def api_queue_slot_delete(sid):
 
 @app.route("/api/schedule/best-times")
 def api_best_times():
-    require_login()
-    return jsonify({"best": best_times(get_db(), request.args.get("tz"), request.args.get("offset"))})
+    u = require_login()
+    db = get_db()
+    return jsonify({"best": best_times(db, request.args.get("tz"), request.args.get("offset"),
+                                       ws_member_ids(db, u))})
 
 
 def _local_to_utc(date_s, time_s, tz, offset):
@@ -7300,14 +7917,17 @@ def api_analytics():
     db = get_db()
     days = max(1, min(365, int(request.args.get("days") or 30)))
     brand = request.args.get("brand_id") or _rget(u, "active_brand_id")
-    return jsonify(analytics_data(db, days, int(brand) if brand else None, request.args.get("platform") or None))
+    return jsonify(analytics_data(db, days, int(brand) if brand else None, request.args.get("platform") or None,
+                                  member_ids=ws_member_ids(db, u)))
 
 
 @app.route("/api/analytics/refresh", methods=["POST"])
 def api_analytics_refresh():
-    require_login()
+    u = require_login()
     db = get_db()
-    rows = db.execute("SELECT * FROM post_targets WHERE status='published' ORDER BY id DESC LIMIT 40").fetchall()
+    wq, wa = ws_sql(db, u, "c.owner_id")
+    rows = db.execute("SELECT t.* FROM post_targets t JOIN calendar_items c ON c.id=t.item_id "
+                      "WHERE t.status='published'" + wq + " ORDER BY t.id DESC LIMIT 60", wa).fetchall()
     n = 0
     for t in rows:
         try:
@@ -7324,7 +7944,8 @@ def api_analytics_report():
     db = get_db()
     days = max(1, min(365, int(request.args.get("days") or 7)))
     brand = _rget(u, "active_brand_id")
-    buf = build_report_pdf(analytics_data(db, days, brand), f"Social media report — last {days} days")
+    buf = build_report_pdf(analytics_data(db, days, brand, member_ids=ws_member_ids(db, u)),
+                           f"Social media report — last {days} days")
     return send_file(buf, as_attachment=True, download_name=f"social-report-{days}d.pdf", mimetype="application/pdf")
 
 
@@ -7337,7 +7958,7 @@ def api_analytics_report_email():
     if not to:
         return jsonify({"error": "Enter an email address."}), 400
     days = max(1, min(365, int(d.get("days") or 7)))
-    data = analytics_data(db, days, _rget(u, "active_brand_id"))
+    data = analytics_data(db, days, _rget(u, "active_brand_id"), member_ids=ws_member_ids(db, u))
     pdf = build_report_pdf(data, f"Social media report — last {days} days").getvalue()
     ok, msg = send_email(db, to, f"Social media report — last {days} days",
                          f"{data['sum']['posts']} posts · {data['sum']['views']:,} views · "
@@ -7351,11 +7972,12 @@ def api_analytics_report_email():
 
 @app.route("/api/inbox")
 def api_inbox():
-    require_login()
+    u = require_login()
     db = get_db()
+    wq, wa = ws_sql(db, u, "c.owner_id")
     q = ("SELECT i.*, c.title AS post_title, t.permalink FROM inbox_comments i "
-         "LEFT JOIN calendar_items c ON c.id=i.item_id LEFT JOIN post_targets t ON t.id=i.target_id WHERE 1=1")
-    args = []
+         "LEFT JOIN calendar_items c ON c.id=i.item_id LEFT JOIN post_targets t ON t.id=i.target_id WHERE 1=1" + wq)
+    args = list(wa)
     if request.args.get("status"):
         q += " AND i.status=?"
         args.append(request.args["status"])
@@ -7368,14 +7990,17 @@ def api_inbox():
     q += " ORDER BY i.id DESC LIMIT 300"
     rows = [dict(r) for r in db.execute(q, args).fetchall()]
     counts = {r["status"]: r["n"] for r in db.execute(
-        "SELECT status, COUNT(*) AS n FROM inbox_comments GROUP BY status").fetchall()}
-    neg = db.execute("SELECT COUNT(*) FROM inbox_comments WHERE sentiment='negative' AND status='new'").fetchone()[0]
+        "SELECT i.status, COUNT(*) AS n FROM inbox_comments i JOIN calendar_items c ON c.id=i.item_id "
+        "WHERE 1=1" + wq + " GROUP BY i.status", wa).fetchall()}
+    neg = db.execute("SELECT COUNT(*) FROM inbox_comments i JOIN calendar_items c ON c.id=i.item_id "
+                     "WHERE i.sentiment='negative' AND i.status='new'" + wq, wa).fetchone()[0]
     # Comments the platform counts but won't return to the app (e.g. Meta apps in
     # Development mode only expose comments written by app testers).
     hidden = {}
     for t in db.execute("SELECT t.id, t.platform, t.comments, "
                         "(SELECT COUNT(*) FROM inbox_comments i WHERE i.target_id=t.id) AS got "
-                        "FROM post_targets t WHERE t.status='published' AND t.simulated=0").fetchall():
+                        "FROM post_targets t JOIN calendar_items c ON c.id=t.item_id "
+                        "WHERE t.status='published' AND t.simulated=0" + wq, wa).fetchall():
         gap = (t["comments"] or 0) - (t["got"] or 0)
         if gap > 0:
             hidden[t["platform"]] = hidden.get(t["platform"], 0) + gap
@@ -7384,11 +8009,13 @@ def api_inbox():
 
 @app.route("/api/inbox/sync", methods=["POST"])
 def api_inbox_sync():
-    require_login()
+    u = require_login()
     db = get_db()
     new = 0
-    for t in db.execute("SELECT * FROM post_targets WHERE status='published' AND simulated=0 "
-                        "ORDER BY id DESC LIMIT 300").fetchall():
+    wq, wa = ws_sql(db, u, "c.owner_id")
+    for t in db.execute("SELECT t.* FROM post_targets t JOIN calendar_items c ON c.id=t.item_id "
+                        "WHERE t.status='published' AND t.simulated=0" + wq + " ORDER BY t.id DESC LIMIT 300",
+                        wa).fetchall():
         row = _cal_item(db, t["item_id"])
         acct = _publish_account(db, row, t["platform"]) if row else None
         if not acct or acct.get("mode") != "live":
@@ -7406,11 +8033,12 @@ def api_inbox_sync():
 def api_inbox_suggest(iid):
     require_login()
     db = get_db()
-    c = db.execute("SELECT i.*, c.title AS post_title FROM inbox_comments i LEFT JOIN calendar_items c "
-                   "ON c.id=i.item_id WHERE i.id=?", (iid,)).fetchone()
+    c = db.execute("SELECT i.*, c.title AS post_title, c.owner_id, c.brand_id FROM inbox_comments i "
+                   "LEFT JOIN calendar_items c ON c.id=i.item_id WHERE i.id=?", (iid,)).fetchone()
     if not c:
         return jsonify({"error": "Not found."}), 404
-    reps, source = suggest_replies(c["text"], c["post_title"] or "", c["platform"])
+    reps, source = suggest_replies(c["text"], c["post_title"] or "", c["platform"],
+                                   kit_for_owner(db, c["owner_id"], c["brand_id"]) if c["owner_id"] else None)
     return jsonify({"replies": reps, "source": source})
 
 
@@ -7509,6 +8137,10 @@ def api_brand_active():
     u = require_login()
     db = get_db()
     bid = (request.get_json(force=True) or {}).get("brand_id")
+    if bid:
+        b = db.execute("SELECT owner_id FROM brands WHERE id=?", (int(bid),)).fetchone()
+        if not b or not (is_super(u) or b["owner_id"] == billing_user_id(u)):
+            return jsonify({"error": "Brand not found."}), 404
     db.execute("UPDATE users SET active_brand_id=? WHERE id=?", (int(bid) if bid else None, u["id"]))
     db.commit()
     return jsonify({"ok": True, "active_brand_id": int(bid) if bid else None})
@@ -7602,12 +8234,1007 @@ def api_alert_test():
 @app.route("/api/jobs")
 def api_jobs():
     u = require_login()
-    if not is_admin(u):
+    if not is_super(u):
         return jsonify({"error": "Not allowed."}), 403
     db = get_db()
     rows = db.execute("SELECT id, kind, status, attempts, max_attempts, run_at, last_error, updated_at FROM jobs "
                       "ORDER BY id DESC LIMIT 100").fetchall()
     return jsonify({"jobs": [dict(r) for r in rows]})
+
+
+# =========================================================================== #
+#  V32 : PLATFORM-WIDE APP CREDENTIALS
+#  The SuperAdmin registers ONE developer app per platform; every client just
+#  clicks Connect. A client may still "bring their own app" (their own ID +
+#  secret), which then takes precedence for that client.
+# =========================================================================== #
+def app_creds(db, uid, platform):
+    """(client_id, client_secret, source) — source is "own", "platform" or ""."""
+    ik, sk = CRED_KEYS[platform]
+    own_id, own_sec = uget_setting(db, uid, ik), uget_setting(db, uid, sk)
+    if own_id and own_sec:
+        return own_id, own_sec, "own"
+    g_id, g_sec = get_setting(db, f"plat_{platform}_app_id"), get_setting(db, f"plat_{platform}_app_secret")
+    if g_id and g_sec:
+        return g_id, g_sec, "platform"
+    return own_id, own_sec, ""
+
+
+def _promote_superadmin_creds(db):
+    """First run of V32: the SuperAdmin's own app credentials become the platform-wide ones."""
+    try:
+        sa = db.execute("SELECT id FROM users WHERE role='superadmin' ORDER BY id LIMIT 1").fetchone()
+        if not sa:
+            return
+        for p, (ik, sk) in CRED_KEYS.items():
+            if get_setting(db, f"plat_{p}_app_id"):
+                continue
+            i, s_ = uget_setting(db, sa["id"], ik), uget_setting(db, sa["id"], sk)
+            if i and s_:
+                set_setting(db, f"plat_{p}_app_id", i)
+                set_setting(db, f"plat_{p}_app_secret", s_)
+    except Exception:
+        pass
+
+
+def _public_base(db):
+    """Public https address of the app — usable from background threads (no request)."""
+    from flask import has_request_context
+    return ((get_setting(db, "oauth_redirect_base") or os.environ.get("PUBLIC_BASE_URL")
+             or os.environ.get("RENDER_EXTERNAL_URL")
+             or (request.host_url if has_request_context() else "") or "http://127.0.0.1:5000").strip().rstrip("/"))
+
+
+def _ws_accounts(db, u, platform=None):
+    """Live connected accounts in the login's workspace (all for the SuperAdmin)."""
+    ids = ws_member_ids(db, u)
+    q, args = "SELECT * FROM social_accounts WHERE mode='live'", []
+    if ids is not None:
+        q += f" AND user_id IN ({','.join('?' * len(ids))})"
+        args += ids
+    if platform:
+        q += " AND platform=?"
+        args.append(platform)
+    return [_hydrate_account(db, r) for r in db.execute(q + " ORDER BY platform, id", args).fetchall()]
+
+
+def _iso_utc(s):
+    """Platform timestamps → naive UTC ISO string."""
+    if not s:
+        return _now()
+    try:
+        from datetime import timezone
+        t = s.replace("Z", "+00:00")
+        if re.search(r"[+-]\d{4}$", t):
+            t = t[:-2] + ":" + t[-2:]
+        d = datetime.fromisoformat(t)
+        if d.tzinfo:
+            d = d.astimezone(timezone.utc).replace(tzinfo=None)
+        return d.isoformat()
+    except Exception:
+        return _now()
+
+
+# =========================================================================== #
+#  V32 : IMPORT EXISTING POSTS
+# =========================================================================== #
+def import_account_posts(db, acct, limit=50):
+    """Pull an account's recent posts into the dashboard (as published items with a
+    post target), so their comments and stats are tracked like dashboard posts."""
+    posts = P.list_posts(acct["platform"], acct, limit)
+    urow = db.execute("SELECT username FROM users WHERE id=?", (acct["user_id"],)).fetchone()
+    owner = urow["username"] if urow else ""
+    new_targets = []
+    for p in posts:
+        if db.execute("SELECT 1 FROM post_targets WHERE platform=? AND remote_id=?",
+                      (acct["platform"], p["id"])).fetchone():
+            continue
+        created = _iso_utc(p["created"])
+        mt = p["media_type"]
+        kind = "video" if ("video" in mt or "reel" in mt) else ("carousel" if "carousel" in mt or "album" in mt
+                                                                 else ("text" if mt in ("text", "") and not p["thumb"] else "image"))
+        cap = (p["caption"] or "").strip()
+        title = (cap.split("\n")[0][:70] or f"Imported {P.PLATFORMS[acct['platform']]['label']} post")
+        cur = db.execute(
+            "INSERT INTO calendar_items (date, title, caption, hashtags, state, approved, owner, owner_id, created_at, "
+            "platforms, media_kind, content_type, published_date, publish_state, publish_pct, source, external_thumb, "
+            "external_url, brand_id) VALUES (?,?,?, '', 'published', 1, ?,?,?,?,?,?,?, 'published', 100, 'imported', ?,?,?)",
+            (created[:10], title, cap, owner, acct["user_id"], _now(), json.dumps([acct["platform"]]), kind,
+             "reel" if kind == "video" else "post", created[:10], p["thumb"], p["permalink"], acct.get("brand_id")))
+        tcur = db.execute("INSERT INTO post_targets (item_id, platform, status, remote_id, permalink, message, "
+                          "attempts, simulated, published_at, created_at) VALUES (?,?, 'published', ?,?, "
+                          "'Imported from the platform', 0, 0, ?, ?)",
+                          (cur.lastrowid, acct["platform"], p["id"], p["permalink"], created, _now()))
+        new_targets.append(tcur.lastrowid)
+    if acct.get("id"):
+        db.execute("UPDATE social_accounts SET imported_at=? WHERE id=?", (_now(), acct["id"]))
+    db.commit()
+    return len(new_targets), len(posts)
+
+
+def _bg_import_and_snapshot(account_row_id):
+    """After connecting: import past posts, first account snapshot, stats+comments, DMs."""
+    try:
+        db = db_connect()
+        r = db.execute("SELECT * FROM social_accounts WHERE id=?", (account_row_id,)).fetchone()
+        if not r:
+            db.close()
+            return
+        acct = _hydrate_account(db, r)
+        try:
+            import_account_posts(db, acct)
+        except Exception:
+            pass
+        try:
+            snapshot_account(db, acct)
+        except Exception:
+            pass
+        for t in db.execute("SELECT t.* FROM post_targets t JOIN calendar_items c ON c.id=t.item_id "
+                            "WHERE t.platform=? AND t.status='published' AND c.owner_id=? "
+                            "ORDER BY t.published_at DESC LIMIT 20", (acct["platform"], acct["user_id"])).fetchall():
+            try:
+                refresh_target_stats(db, t)
+            except Exception:
+                pass
+        if acct["platform"] in P.DM_PLATFORMS:
+            try:
+                sync_dms(db, acct)
+            except Exception:
+                pass
+        db.close()
+    except Exception:
+        pass
+
+
+# =========================================================================== #
+#  V32 : ACCOUNT-LEVEL ANALYTICS (followers, reach, profile views over time)
+# =========================================================================== #
+def snapshot_account(db, acct):
+    st = P.account_stats(acct["platform"], acct)
+    day = datetime.utcnow().strftime("%Y-%m-%d")
+    ex = db.execute("SELECT id FROM account_stats WHERE account_id=? AND day=?", (acct["id"], day)).fetchone()
+    vals = (st["followers"], st["reach"], st["impressions"], st["profile_views"], st["media_count"], _now())
+    if ex:
+        db.execute("UPDATE account_stats SET followers=?, reach=?, impressions=?, profile_views=?, media_count=?, "
+                   "captured_at=? WHERE id=?", vals + (ex["id"],))
+    else:
+        db.execute("INSERT INTO account_stats (followers, reach, impressions, profile_views, media_count, captured_at, "
+                   "account_id, user_id, platform, day) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                   vals + (acct["id"], acct["user_id"], acct["platform"], day))
+    db.commit()
+    return st
+
+
+def _snapshot_all_accounts():
+    try:
+        db = db_connect()
+        for r in db.execute("SELECT * FROM social_accounts WHERE mode='live'").fetchall():
+            try:
+                snapshot_account(db, _ensure_fresh(db, _hydrate_account(db, r)))
+            except Exception:
+                pass
+        db.close()
+    except Exception:
+        pass
+
+
+def account_analytics(db, u, days=30):
+    since = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+    out = []
+    for a in _ws_accounts(db, u):
+        rows = [dict(r) for r in db.execute("SELECT day, followers, reach, impressions, profile_views, media_count "
+                                            "FROM account_stats WHERE account_id=? AND day>=? ORDER BY day",
+                                            (a["id"], since)).fetchall()]
+        first = rows[0] if rows else None
+        last = rows[-1] if rows else None
+        out.append({"id": a["id"], "platform": a["platform"], "label": P.PLATFORMS[a["platform"]]["label"],
+                    "account": a.get("account_name") or "", "series": rows,
+                    "followers": last["followers"] if last else 0,
+                    "growth": (last["followers"] - first["followers"]) if (first and last) else 0,
+                    "reach": sum(r["reach"] or 0 for r in rows), "profile_views": sum(r["profile_views"] or 0 for r in rows),
+                    "impressions": last["impressions"] if last else 0, "days_tracked": len(rows)})
+    return out
+
+
+# =========================================================================== #
+#  V32 : DIRECT MESSAGES (Instagram + Facebook Page)
+# =========================================================================== #
+def _store_dm(db, acct, conv_id, participant_id, participant_name, m):
+    if not m.get("id") or db.execute("SELECT 1 FROM dm_messages WHERE platform=? AND remote_id=?",
+                                     (acct["platform"], str(m["id"]))).fetchone():
+        return False
+    own = str(acct.get("account_id") or "")
+    out_dir = str(m.get("from_id") or "") == own
+    db.execute("INSERT INTO dm_messages (account_id, user_id, platform, conversation_id, participant_id, "
+               "participant_name, remote_id, from_id, from_name, text, created_at, direction, status) "
+               "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+               (acct["id"], acct["user_id"], acct["platform"], participant_id or conv_id, participant_id,
+                participant_name, str(m["id"]), str(m.get("from_id") or ""), m.get("from_name") or "",
+                m.get("text") or "", _iso_utc(m.get("created")), "out" if out_dir else "in",
+                "read" if out_dir else "new"))
+    return True
+
+
+def sync_dms(db, acct):
+    new = 0
+    for th in P.dm_threads(acct["platform"], acct):
+        for m in th["messages"]:
+            if _store_dm(db, acct, th["conversation_id"], th["participant_id"], th["participant_name"], m):
+                new += 1
+    db.commit()
+    return new
+
+
+def _sync_all_dms():
+    try:
+        db = db_connect()
+        for r in db.execute("SELECT * FROM social_accounts WHERE mode='live' AND platform IN ('instagram','facebook')").fetchall():
+            try:
+                sync_dms(db, _ensure_fresh(db, _hydrate_account(db, r)))
+            except Exception:
+                pass
+        db.close()
+    except Exception:
+        pass
+
+
+def _account_in_ws(db, u, account_id):
+    r = db.execute("SELECT * FROM social_accounts WHERE id=?", (account_id,)).fetchone()
+    if not r or not in_ws(db, u, r["user_id"]):
+        return None
+    return r
+
+
+@app.route("/api/dms")
+def api_dms():
+    u = require_login()
+    db = get_db()
+    ids = ws_member_ids(db, u)
+    q = ("SELECT d.account_id, d.platform, d.conversation_id, d.participant_id, MAX(d.participant_name) AS name, "
+         "MAX(d.created_at) AS last_at, SUM(CASE WHEN d.status='new' THEN 1 ELSE 0 END) AS unread, COUNT(*) AS n "
+         "FROM dm_messages d WHERE 1=1")
+    args = []
+    if ids is not None:
+        q += f" AND d.user_id IN ({','.join('?' * len(ids))})"
+        args += ids
+    q += " GROUP BY d.account_id, d.platform, d.conversation_id, d.participant_id ORDER BY last_at DESC LIMIT 200"
+    convs = []
+    for c in db.execute(q, args).fetchall():
+        c = dict(c)
+        last = db.execute("SELECT text, direction FROM dm_messages WHERE account_id=? AND conversation_id=? "
+                          "ORDER BY created_at DESC, id DESC LIMIT 1", (c["account_id"], c["conversation_id"])).fetchone()
+        acc = db.execute("SELECT account_name FROM social_accounts WHERE id=?", (c["account_id"],)).fetchone()
+        c["last_text"] = last["text"] if last else ""
+        c["last_dir"] = last["direction"] if last else ""
+        c["account"] = acc["account_name"] if acc else ""
+        convs.append(c)
+    have = [a["platform"] for a in _ws_accounts(db, u) if a["platform"] in P.DM_PLATFORMS]
+    return jsonify({"conversations": convs, "unread": sum(c["unread"] or 0 for c in convs),
+                    "dm_accounts": sorted(set(have))})
+
+
+@app.route("/api/dms/<int:account_id>/<path:conv_id>", methods=["GET", "POST"])
+def api_dm_thread(account_id, conv_id):
+    u = require_login()
+    db = get_db()
+    r = _account_in_ws(db, u, account_id)
+    if not r:
+        return jsonify({"error": "Not found."}), 404
+    if request.method == "POST":
+        text = ((request.get_json(force=True) or {}).get("text") or "").strip()
+        if not text:
+            return jsonify({"error": "Write a message."}), 400
+        part = db.execute("SELECT participant_id, participant_name FROM dm_messages WHERE account_id=? AND "
+                          "conversation_id=? LIMIT 1", (account_id, conv_id)).fetchone()
+        if not part:
+            return jsonify({"error": "Conversation not found."}), 404
+        acct = _ensure_fresh(db, _hydrate_account(db, r))
+        ok, msg, mid = P.dm_send(acct["platform"], acct, part["participant_id"], text)
+        if not ok:
+            return jsonify({"error": msg}), 400
+        _store_dm(db, acct, conv_id, part["participant_id"], part["participant_name"],
+                  {"id": mid or ("out_" + secrets.token_hex(6)), "from_id": acct.get("account_id"),
+                   "from_name": acct.get("account_name"), "text": text, "created": _now()})
+        db.execute("UPDATE dm_messages SET sent_by=? WHERE remote_id=?", (u["username"], mid or ""))
+        db.commit()
+        log_activity(db, u, "dm_replied", "dm", account_id, text[:120])
+    msgs = [dict(m) for m in db.execute("SELECT * FROM dm_messages WHERE account_id=? AND conversation_id=? "
+                                        "ORDER BY created_at, id", (account_id, conv_id)).fetchall()]
+    db.execute("UPDATE dm_messages SET status='read' WHERE account_id=? AND conversation_id=? AND status='new'",
+               (account_id, conv_id))
+    db.commit()
+    return jsonify({"messages": msgs, "platform": r["platform"], "account": r["account_name"]})
+
+
+@app.route("/api/dms/sync", methods=["POST"])
+def api_dms_sync():
+    u = require_login()
+    db = get_db()
+    new, errors = 0, []
+    for a in _ws_accounts(db, u):
+        if a["platform"] not in P.DM_PLATFORMS:
+            continue
+        try:
+            new += sync_dms(db, _ensure_fresh(db, a))
+        except Exception as e:  # noqa
+            errors.append(str(e))
+    return jsonify({"ok": True, "new": new})
+
+
+# =========================================================================== #
+#  V32 : BRAND KIT (per workspace, optionally per brand)
+# =========================================================================== #
+def _kit_row(db, ws, brand_id=None):
+    if brand_id:
+        r = db.execute("SELECT * FROM brand_kits WHERE workspace_id=? AND brand_id=?", (ws, brand_id)).fetchone()
+        if r:
+            return dict(r)
+    r = db.execute("SELECT * FROM brand_kits WHERE workspace_id=? AND brand_id IS NULL", (ws,)).fetchone()
+    return dict(r) if r else None
+
+
+def kit_for_owner(db, owner_id, brand_id=None):
+    ws = ws_owner_id(db, owner_id)
+    return _kit_row(db, ws, brand_id) if ws else None
+
+
+def kit_prompt(kit):
+    """Brand-kit rules as prompt text for the AI."""
+    if not kit:
+        return ""
+    parts = []
+    if (kit.get("tone") or "").strip():
+        parts.append("Brand voice / tone: " + kit["tone"].strip())
+    if (kit.get("banned_words") or "").strip():
+        parts.append("NEVER use these words or phrases: " + kit["banned_words"].strip())
+    if (kit.get("default_hashtags") or "").strip():
+        parts.append("Always include these brand hashtags: " + kit["default_hashtags"].strip())
+    return "\n".join(parts)
+
+
+def banned_words_in(text, kit):
+    if not kit or not (kit.get("banned_words") or "").strip():
+        return []
+    low = (text or "").lower()
+    words = [w.strip() for w in re.split(r"[,\n]", kit["banned_words"]) if w.strip()]
+    return [w for w in words if w.lower() in low]
+
+
+@app.route("/api/brandkit", methods=["GET", "POST"])
+def api_brandkit():
+    u = require_login()
+    db = get_db()
+    ws = billing_user_id(u)
+    body = (request.get_json(silent=True) or {}) if request.method == "POST" else {}
+    bid = request.args.get("brand_id") or body.get("brand_id")
+    bid = int(bid) if bid else None
+    if bid:
+        b = db.execute("SELECT owner_id FROM brands WHERE id=?", (bid,)).fetchone()
+        if not b or b["owner_id"] != ws:
+            return jsonify({"error": "Brand not found."}), 404
+    if request.method == "POST":
+        if is_subuser(u) and not _rget(u, "can_edit", 1):
+            return jsonify({"error": "You don't have permission to edit the brand kit."}), 403
+        d = request.get_json(force=True) or {}
+        fields = {k: (d.get(k) or "").strip() for k in ("color_primary", "color_secondary", "tone",
+                                                          "default_hashtags", "banned_words", "website")}
+        ex = db.execute("SELECT id FROM brand_kits WHERE workspace_id=? AND COALESCE(brand_id,0)=?",
+                        (ws, bid or 0)).fetchone()
+        if ex:
+            db.execute("UPDATE brand_kits SET color_primary=?, color_secondary=?, tone=?, default_hashtags=?, "
+                       "banned_words=?, website=?, updated_at=? WHERE id=?",
+                       tuple(fields.values()) + (_now(), ex["id"]))
+        else:
+            db.execute("INSERT INTO brand_kits (color_primary, color_secondary, tone, default_hashtags, banned_words, "
+                       "website, updated_at, workspace_id, brand_id) VALUES (?,?,?,?,?,?,?,?,?)",
+                       tuple(fields.values()) + (_now(), ws, bid))
+        db.commit()
+        log_activity(db, u, "brandkit_saved", "brand", bid, "")
+    kit = _kit_row(db, ws, bid) or {}
+    if bid and kit.get("brand_id") != bid:
+        kit = {"inherited": True, **kit}
+    return jsonify({"kit": kit, "brand_id": bid})
+
+
+@app.route("/api/brandkit/logo", methods=["POST", "DELETE"])
+def api_brandkit_logo():
+    u = require_login()
+    db = get_db()
+    ws = billing_user_id(u)
+    bid = request.args.get("brand_id")
+    bid = int(bid) if bid else None
+    ex = db.execute("SELECT id FROM brand_kits WHERE workspace_id=? AND COALESCE(brand_id,0)=?", (ws, bid or 0)).fetchone()
+    if not ex:
+        cur = db.execute("INSERT INTO brand_kits (workspace_id, brand_id, updated_at) VALUES (?,?,?)", (ws, bid, _now()))
+        kid = cur.lastrowid
+    else:
+        kid = ex["id"]
+    if request.method == "DELETE":
+        db.execute("UPDATE brand_kits SET logo=NULL WHERE id=?", (kid,))
+        db.commit()
+        return jsonify({"ok": True})
+    f = request.files.get("file")
+    if not (f and f.filename and f.filename.lower().endswith((".png", ".jpg", ".jpeg"))):
+        return jsonify({"error": "Upload a PNG or JPG logo."}), 400
+    fname = _safe_save(f)
+    db.execute("UPDATE brand_kits SET logo=?, updated_at=? WHERE id=?", (fname, _now(), kid))
+    db.commit()
+    return jsonify({"ok": True, "logo": fname})
+
+
+# =========================================================================== #
+#  V32 : CONTENT LIBRARY (media, caption templates, hashtag groups)
+# =========================================================================== #
+@app.route("/api/library", methods=["GET", "POST"])
+def api_library():
+    u = require_login()
+    db = get_db()
+    ws = billing_user_id(u)
+    if request.method == "POST":
+        if request.files:
+            f = request.files.get("file")
+            if not (f and f.filename):
+                return jsonify({"error": "Choose a file."}), 400
+            fname = _safe_save(f)
+            title = (request.form.get("title") or f.filename)[:120]
+            cur = db.execute("INSERT INTO library_items (workspace_id, brand_id, kind, title, body, filename, created_by, "
+                             "created_at) VALUES (?,?, 'media', ?, ?, ?, ?, ?)",
+                             (ws, _rget(u, "active_brand_id"), title, request.form.get("body") or "", fname,
+                              u["username"], _now()))
+        else:
+            d = request.get_json(force=True) or {}
+            kind = d.get("kind")
+            if kind not in ("caption", "hashtags"):
+                return jsonify({"error": "Invalid item type."}), 400
+            if not (d.get("body") or "").strip():
+                return jsonify({"error": "Write the text first."}), 400
+            cur = db.execute("INSERT INTO library_items (workspace_id, brand_id, kind, title, body, created_by, created_at) "
+                             "VALUES (?,?,?,?,?,?,?)", (ws, _rget(u, "active_brand_id"), kind,
+                                                        (d.get("title") or "Untitled")[:120], d["body"].strip(),
+                                                        u["username"], _now()))
+        db.commit()
+        log_activity(db, u, "library_added", "library", cur.lastrowid, "")
+    q, args = "SELECT * FROM library_items WHERE 1=1", []
+    if not is_super(u):
+        q += " AND workspace_id=?"
+        args.append(ws)
+    if request.args.get("kind"):
+        q += " AND kind=?"
+        args.append(request.args["kind"])
+    return jsonify({"items": [dict(r) for r in db.execute(q + " ORDER BY id DESC LIMIT 500", args).fetchall()]})
+
+
+def _library_item(db, u, lid):
+    r = db.execute("SELECT * FROM library_items WHERE id=?", (lid,)).fetchone()
+    if not r or not (is_super(u) or r["workspace_id"] == billing_user_id(u)):
+        return None
+    return r
+
+
+@app.route("/api/library/<int:lid>", methods=["PATCH", "DELETE"])
+def api_library_item(lid):
+    u = require_login()
+    db = get_db()
+    r = _library_item(db, u, lid)
+    if not r:
+        return jsonify({"error": "Not found."}), 404
+    if request.method == "DELETE":
+        db.execute("DELETE FROM library_items WHERE id=?", (lid,))
+        db.commit()
+        if r["filename"] and not _file_in_use(db, r["filename"], -1):
+            try:
+                os.remove(os.path.join(UPLOAD_DIR, r["filename"]))
+            except Exception:
+                pass
+            _supabase_delete(r["filename"])
+        return jsonify({"ok": True})
+    d = request.get_json(force=True) or {}
+    db.execute("UPDATE library_items SET title=COALESCE(?, title), body=COALESCE(?, body) WHERE id=?",
+               ((d.get("title") or "").strip() or None, d.get("body"), lid))
+    db.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/library/<int:lid>/use", methods=["POST"])
+def api_library_use(lid):
+    """Create a draft post from a library media file."""
+    u = require_login()
+    db = get_db()
+    r = _library_item(db, u, lid)
+    if not r or r["kind"] != "media":
+        return jsonify({"error": "Not found."}), 404
+    d = request.get_json(force=True) or {}
+    date_s = (d.get("date") or datetime.now().strftime("%Y-%m-%d")).strip()
+    plats = [p for p in (d.get("platforms") or []) if p in SOCIAL] or ["instagram"]
+    kind = _media_kind_for([r["filename"]])
+    cur = db.execute("INSERT INTO calendar_items (date, title, filename, caption, hashtags, state, approved, owner, owner_id, "
+                     "created_at, platforms, media_kind, content_type, brand_id) "
+                     "VALUES (?,?,?,?, '', 'uploaded', 0, ?,?,?,?,?,?,?)",
+                     (date_s, r["title"], r["filename"], r["body"] or "", u["username"], u["id"], _now(),
+                      json.dumps(plats), kind, "reel" if kind == "video" else "post", _rget(u, "active_brand_id")))
+    db.commit()
+    log_activity(db, u, "created", "item", cur.lastrowid, f"from library: {r['title']}")
+    return jsonify({"ok": True, "id": cur.lastrowid, "date": date_s})
+
+
+# =========================================================================== #
+#  V32 : LINK IN BIO + UTM TRACKED LINKS
+# =========================================================================== #
+def _slugify(t):
+    return re.sub(r"[^a-z0-9]+", "-", (t or "").lower()).strip("-")[:40] or "page"
+
+
+def _utm_url(url, source, medium, campaign, content):
+    parts = urllib.parse.urlsplit(url)
+    q = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+    have = {k for k, _ in q}
+    for k, v in (("utm_source", source), ("utm_medium", medium), ("utm_campaign", campaign), ("utm_content", content)):
+        if v and k not in have:
+            q.append((k, v))
+    return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(q)))
+
+
+def create_short_link(db, ws, url, label="", item_id=None, platform="", source="", medium="", campaign="", content=""):
+    code = secrets.token_urlsafe(5).replace("-", "x").replace("_", "y")[:7]
+    cur = db.execute("INSERT INTO short_links (workspace_id, code, url, label, item_id, platform, utm_source, utm_medium, "
+                     "utm_campaign, utm_content, clicks, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,?)",
+                     (ws, code, url, label, item_id, platform, source, medium, campaign, content, _now()))
+    db.commit()
+    return code, cur.lastrowid
+
+
+def post_link(db, row, platform):
+    """Tracked short link for a post on one platform (created once, then reused)."""
+    if not (_rget(row, "link_url") or "").strip():
+        return ""
+    ex = db.execute("SELECT code FROM short_links WHERE item_id=? AND platform=?", (row["id"], platform)).fetchone()
+    if ex:
+        code = ex["code"]
+    else:
+        ws = ws_owner_id(db, row["owner_id"])
+        camp = _slugify(_rget(row, "link_campaign") or row["title"])
+        code, _ = create_short_link(db, ws, row["link_url"].strip(), row["title"], row["id"], platform,
+                                    platform, "social", camp, f"post{row['id']}")
+    return f"{_public_base(db)}/r/{code}"
+
+
+@app.route("/r/<code>")
+def short_redirect(code):
+    db = get_db()
+    r = db.execute("SELECT * FROM short_links WHERE code=?", (code,)).fetchone()
+    if not r:
+        abort(404)
+    db.execute("UPDATE short_links SET clicks=COALESCE(clicks,0)+1 WHERE id=?", (r["id"],))
+    ref = (request.referrer or "")[:200]
+    db.execute("INSERT INTO link_clicks (link_id, workspace_id, at, day, referrer) VALUES (?,?,?,?,?)",
+               (r["id"], r["workspace_id"], _now(), datetime.utcnow().strftime("%Y-%m-%d"), ref))
+    db.commit()
+    return redirect(_utm_url(r["url"], r["utm_source"], r["utm_medium"], r["utm_campaign"], r["utm_content"]), 302)
+
+
+@app.route("/api/links", methods=["GET", "POST"])
+def api_links():
+    u = require_login()
+    db = get_db()
+    ws = billing_user_id(u)
+    if request.method == "POST":
+        d = request.get_json(force=True) or {}
+        url = (d.get("url") or "").strip()
+        if not re.match(r"^https?://", url):
+            return jsonify({"error": "Enter a full link starting with https://"}), 400
+        code, lid = create_short_link(db, ws, url, (d.get("label") or "")[:120], None, "",
+                                      (d.get("utm_source") or "").strip(), (d.get("utm_medium") or "").strip(),
+                                      (d.get("utm_campaign") or "").strip(), (d.get("utm_content") or "").strip())
+        log_activity(db, u, "link_created", "link", lid, url)
+    q, args = "SELECT * FROM short_links WHERE 1=1", []
+    if not is_super(u):
+        q += " AND workspace_id=?"
+        args.append(ws)
+    rows = [dict(r) for r in db.execute(q + " ORDER BY id DESC LIMIT 500", args).fetchall()]
+    base = _public_base(db)
+    for r in rows:
+        r["short_url"] = f"{base}/r/{r['code']}"
+    return jsonify({"links": rows})
+
+
+@app.route("/api/links/<int:lid>", methods=["DELETE"])
+def api_link_delete(lid):
+    u = require_login()
+    db = get_db()
+    r = db.execute("SELECT * FROM short_links WHERE id=?", (lid,)).fetchone()
+    if not r or not (is_super(u) or r["workspace_id"] == billing_user_id(u)):
+        return jsonify({"error": "Not found."}), 404
+    db.execute("DELETE FROM short_links WHERE id=?", (lid,))
+    db.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/links/stats")
+def api_link_stats():
+    u = require_login()
+    db = get_db()
+    days = max(1, min(365, int(request.args.get("days") or 30)))
+    since = (datetime.utcnow() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+    q, args = "SELECT c.day, l.platform, l.id AS link_id FROM link_clicks c JOIN short_links l ON l.id=c.link_id WHERE c.day>=?", [since]
+    if not is_super(u):
+        q += " AND l.workspace_id=?"
+        args.append(billing_user_id(u))
+    rows = db.execute(q, args).fetchall()
+    by_day, by_platform, by_link = {}, {}, {}
+    for r in rows:
+        by_day[r["day"]] = by_day.get(r["day"], 0) + 1
+        k = r["platform"] or "bio / other"
+        by_platform[k] = by_platform.get(k, 0) + 1
+        by_link[r["link_id"]] = by_link.get(r["link_id"], 0) + 1
+    start = datetime.utcnow().date() - timedelta(days=days - 1)
+    series = [{"date": (start + timedelta(days=i)).isoformat(),
+               "clicks": by_day.get((start + timedelta(days=i)).isoformat(), 0)} for i in range(days)]
+    return jsonify({"series": series, "by_platform": by_platform, "by_link": by_link, "total": len(rows)})
+
+
+@app.route("/api/bio", methods=["GET", "POST"])
+def api_bio():
+    u = require_login()
+    db = get_db()
+    ws = billing_user_id(u)
+    brand = _rget(u, "active_brand_id")
+    page = db.execute("SELECT * FROM bio_pages WHERE workspace_id=? AND COALESCE(brand_id,0)=?",
+                      (ws, brand or 0)).fetchone()
+    if request.method == "POST":
+        d = request.get_json(force=True) or {}
+        slug = _slugify(d.get("slug") or d.get("title") or u["username"])
+        clash = db.execute("SELECT id FROM bio_pages WHERE slug=?", (slug,)).fetchone()
+        if clash and (not page or clash["id"] != page["id"]):
+            return jsonify({"error": "That page address is taken — choose another."}), 400
+        links_in = [lk for lk in (d.get("links") or []) if re.match(r"^https?://", (lk.get("url") or "").strip())]
+        old = {lk.get("url"): lk.get("code") for lk in _jl(page["links"], [])} if page else {}
+        links = []
+        for lk in links_in[:30]:
+            url = lk["url"].strip()
+            code = old.get(url)
+            if not code:
+                code, _ = create_short_link(db, ws, url, (lk.get("label") or url)[:120], None, "bio",
+                                            "linkinbio", "social", "bio", _slugify(lk.get("label") or "link"))
+            links.append({"label": (lk.get("label") or url)[:120], "url": url, "code": code})
+        vals = (slug, (d.get("title") or "")[:120], (d.get("bio") or "")[:500], (d.get("theme") or "#2f7bff")[:9],
+                json.dumps(links), 1 if d.get("show_posts", True) else 0, _now())
+        if page:
+            db.execute("UPDATE bio_pages SET slug=?, title=?, bio=?, theme=?, links=?, show_posts=?, updated_at=? "
+                       "WHERE id=?", vals + (page["id"],))
+        else:
+            db.execute("INSERT INTO bio_pages (slug, title, bio, theme, links, show_posts, updated_at, workspace_id, "
+                       "brand_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)", vals + (ws, brand, _now()))
+        db.commit()
+        log_activity(db, u, "bio_saved", "bio", None, slug)
+        page = db.execute("SELECT * FROM bio_pages WHERE workspace_id=? AND COALESCE(brand_id,0)=?",
+                          (ws, brand or 0)).fetchone()
+    out = dict(page) if page else None
+    if out:
+        out["links"] = _jl(out["links"], [])
+        out["url"] = f"{_public_base(db)}/l/{out['slug']}"
+    return jsonify({"page": out})
+
+
+@app.route("/api/bio/avatar", methods=["POST"])
+def api_bio_avatar():
+    u = require_login()
+    db = get_db()
+    page = db.execute("SELECT id FROM bio_pages WHERE workspace_id=? AND COALESCE(brand_id,0)=?",
+                      (billing_user_id(u), _rget(u, "active_brand_id") or 0)).fetchone()
+    if not page:
+        return jsonify({"error": "Save the page first."}), 400
+    f = request.files.get("file")
+    if not (f and f.filename and _is_image(f.filename)):
+        return jsonify({"error": "Upload an image."}), 400
+    fname = _safe_save(f)
+    db.execute("UPDATE bio_pages SET avatar=? WHERE id=?", (fname, page["id"]))
+    db.commit()
+    return jsonify({"ok": True, "avatar": fname})
+
+
+@app.route("/l/<slug>")
+def bio_public(slug):
+    db = get_db()
+    page = db.execute("SELECT * FROM bio_pages WHERE slug=?", (slug,)).fetchone()
+    if not page:
+        abort(404)
+    posts = []
+    if page["show_posts"]:
+        members = [page["workspace_id"]] + [r["id"] for r in db.execute("SELECT id FROM users WHERE parent_id=?",
+                                                                          (page["workspace_id"],)).fetchall()]
+        q = (f"SELECT c.*, t.permalink AS tlink FROM calendar_items c JOIN post_targets t ON t.item_id=c.id "
+             f"WHERE t.status='published' AND t.simulated=0 AND c.owner_id IN ({','.join('?' * len(members))})")
+        args = list(members)
+        if page["brand_id"]:
+            q += " AND c.brand_id=?"
+            args.append(page["brand_id"])
+        seen = set()
+        for r in db.execute(q + " ORDER BY t.published_at DESC LIMIT 40", args).fetchall():
+            if r["id"] in seen:
+                continue
+            seen.add(r["id"])
+            files = _item_files(r)
+            thumb = (f"/uploads/{urllib.parse.quote(r['thumbnail'] or files[0])}"
+                     if (r["thumbnail"] or (files and _is_image(files[0]))) else (r["external_thumb"] or ""))
+            if thumb:
+                posts.append({"thumb": thumb, "link": r["tlink"] or r["external_url"] or "", "title": r["title"]})
+            if len(posts) >= 12:
+                break
+    kit = _kit_row(db, page["workspace_id"], page["brand_id"]) or {}
+    return render_template("bio.html", page=dict(page), links=_jl(page["links"], []), posts=posts,
+                           logo=kit.get("logo"), company=os.environ.get("COMPANY_NAME") or "SocialPlatform")
+
+
+# =========================================================================== #
+#  V32 : ACCOUNT ANALYTICS + IMPORT + BRANDED MONTHLY REPORT — API
+# =========================================================================== #
+@app.route("/api/analytics/accounts")
+def api_analytics_accounts():
+    u = require_login()
+    db = get_db()
+    days = max(7, min(365, int(request.args.get("days") or 30)))
+    return jsonify({"accounts": account_analytics(db, u, days), "days": days})
+
+
+@app.route("/api/analytics/accounts/refresh", methods=["POST"])
+def api_analytics_accounts_refresh():
+    u = require_login()
+    db = get_db()
+    n = 0
+    for a in _ws_accounts(db, u):
+        try:
+            snapshot_account(db, _ensure_fresh(db, a))
+            n += 1
+        except Exception:
+            pass
+    return jsonify({"ok": True, "refreshed": n})
+
+
+@app.route("/api/platforms/<plat>/import", methods=["POST"])
+def api_platform_import(plat):
+    u = require_login()
+    db = get_db()
+    accts = [a for a in _ws_accounts(db, u, plat) if a["user_id"] == u["id"]] or _ws_accounts(db, u, plat)
+    if not accts:
+        return jsonify({"error": "Connect this platform first."}), 400
+    total_new = total_seen = 0
+    for a in accts:
+        try:
+            n, seen = import_account_posts(db, _ensure_fresh(db, a))
+            total_new += n
+            total_seen += seen
+        except Exception as e:  # noqa
+            return jsonify({"error": f"Import failed: {e}"}), 400
+    log_activity(db, u, "imported", "platform", None, f"{P.PLATFORMS[plat]['label']}: {total_new} new posts")
+    threading.Thread(target=_bg_import_and_snapshot, args=(accts[0]["id"],), daemon=True).start()
+    return jsonify({"ok": True, "imported": total_new, "found": total_seen})
+
+
+def _month_range(month):
+    y, m = [int(x) for x in month.split("-")]
+    start = datetime(y, m, 1)
+    end = datetime(y + (m == 12), (m % 12) + 1, 1)
+    return start, end
+
+
+def monthly_report_data(db, member_ids, month, ws, brand_id=None):
+    start, end = _month_range(month)
+    pstart = (start - timedelta(days=1)).replace(day=1)
+    cur = analytics_data(db, 31, brand_id, member_ids=member_ids, start=start.isoformat(), end=end.isoformat())
+    prev = analytics_data(db, 31, brand_id, member_ids=member_ids, start=pstart.isoformat(), end=start.isoformat())
+    accts = []
+    q = "SELECT * FROM social_accounts WHERE mode='live'"
+    args = []
+    if member_ids is not None:
+        q += f" AND user_id IN ({','.join('?' * len(member_ids))})"
+        args = member_ids
+    for a in db.execute(q, args).fetchall():
+        s0 = db.execute("SELECT followers FROM account_stats WHERE account_id=? AND day>=? AND day<? ORDER BY day LIMIT 1",
+                        (a["id"], start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))).fetchone()
+        s1 = db.execute("SELECT followers FROM account_stats WHERE account_id=? AND day>=? AND day<? ORDER BY day DESC LIMIT 1",
+                        (a["id"], start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))).fetchone()
+        accts.append({"label": P.PLATFORMS[a["platform"]]["label"], "account": a["account_name"] or "",
+                      "start": s0["followers"] if s0 else None, "end": s1["followers"] if s1 else None})
+    kit = _kit_row(db, ws, brand_id) if ws else None
+    return cur, prev, accts, kit, start
+
+
+def build_monthly_pdf(cur, prev, accts, kit, start, company):
+    from fpdf import FPDF
+    reg = os.path.join(_FONT_DIR, "DejaVuSans.ttf")
+    bold = os.path.join(_FONT_DIR, "DejaVuSans-Bold.ttf")
+    pdf = FPDF(format="A4")
+    font = "Helvetica"
+    if os.path.exists(reg) and os.path.exists(bold):
+        try:
+            pdf.add_font("DejaVu", "", reg)
+            pdf.add_font("DejaVu", "B", bold)
+            font = "DejaVu"
+        except Exception:
+            font = "Helvetica"
+    cps = _font_codepoints(reg) if font == "DejaVu" else set()
+
+    def s(t):
+        t = str(t if t is not None else "")
+        if font != "DejaVu":
+            return t.encode("latin-1", "replace").decode("latin-1")
+        return "".join(ch for ch in t if ch in " \n" or ord(ch) in cps) if cps else t
+
+    def rgb(hexv, fallback=(47, 123, 255)):
+        try:
+            h = (hexv or "").lstrip("#")
+            return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4)) if len(h) == 6 else fallback
+        except Exception:
+            return fallback
+
+    primary = rgb((kit or {}).get("color_primary"))
+    pdf.set_auto_page_break(True, margin=15)
+    pdf.add_page()
+    pdf.set_fill_color(*primary)
+    pdf.rect(0, 0, 210, 34, "F")
+    x_text = 12
+    logo = (kit or {}).get("logo")
+    if logo and os.path.exists(os.path.join(UPLOAD_DIR, logo)):
+        try:
+            pdf.image(os.path.join(UPLOAD_DIR, logo), x=12, y=6, h=22)
+            x_text = 42
+        except Exception:
+            pass
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_xy(x_text, 9)
+    pdf.set_font(font, "B", 17)
+    pdf.cell(0, 8, s(f"{company} — monthly social report"))
+    pdf.set_xy(x_text, 19)
+    pdf.set_font(font, "", 11)
+    pdf.cell(0, 6, s(start.strftime("%B %Y")))
+    pdf.set_text_color(18, 49, 90)
+    pdf.set_xy(12, 42)
+
+    def pct(a, b):
+        if not b:
+            return "new" if a else "—"
+        d = 100.0 * (a - b) / b
+        return f"{'+' if d >= 0 else ''}{d:.0f}%"
+    sc, sp = cur["sum"], prev["sum"]
+    er = lambda x: round(100.0 * (x["likes"] + x["comments"] + x["shares"]) / x["views"], 2) if x["views"] else 0
+    pdf.set_font(font, "B", 13)
+    pdf.cell(0, 8, s("This month vs last month"), new_x="LMARGIN", new_y="NEXT")
+    cols = [("Metric", 60), ("This month", 40), ("Last month", 40), ("Change", 40)]
+    pdf.set_font(font, "B", 10)
+    pdf.set_fill_color(235, 242, 252)
+    for n, w in cols:
+        pdf.cell(w, 8, s(n), border=1, fill=True)
+    pdf.ln()
+    pdf.set_font(font, "", 10)
+    for label, key in (("Posts", "posts"), ("Views", "views"), ("Likes", "likes"), ("Comments", "comments"), ("Shares", "shares")):
+        for (n, w), v in zip(cols, (label, f"{sc[key]:,}", f"{sp[key]:,}", pct(sc[key], sp[key]))):
+            pdf.cell(w, 7, s(v), border=1)
+        pdf.ln()
+    for (n, w), v in zip(cols, ("Engagement rate", f"{er(sc)}%", f"{er(sp)}%", pct(er(sc), er(sp)))):
+        pdf.cell(w, 7, s(v), border=1)
+    pdf.ln()
+    if accts:
+        pdf.ln(5)
+        pdf.set_font(font, "B", 13)
+        pdf.cell(0, 8, s("Followers"), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font(font, "B", 10)
+        acols = [("Account", 80), ("Start of month", 35), ("End of month", 35), ("Growth", 30)]
+        for n, w in acols:
+            pdf.cell(w, 8, s(n), border=1, fill=True)
+        pdf.ln()
+        pdf.set_font(font, "", 10)
+        for a in accts:
+            g = (a["end"] - a["start"]) if (a["start"] is not None and a["end"] is not None) else None
+            vals = (f"{a['label']} {a['account']}", "—" if a["start"] is None else f"{a['start']:,}",
+                    "—" if a["end"] is None else f"{a['end']:,}", "—" if g is None else f"{'+' if g >= 0 else ''}{g:,}")
+            for (n, w), v in zip(acols, vals):
+                pdf.cell(w, 7, s(v), border=1)
+            pdf.ln()
+    pdf.ln(5)
+    pdf.set_font(font, "B", 13)
+    pdf.cell(0, 8, s("By platform (this month)"), new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font(font, "", 10)
+    for t in cur["totals"]:
+        pdf.cell(0, 6, s(f"{t['label']}: {t['posts']} posts · {t['views']:,} views · {t['engagement']:,} engagements "
+                         f"· {t['engagement_rate']}% rate"), new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(4)
+    pdf.set_font(font, "B", 13)
+    pdf.cell(0, 8, s("Top posts"), new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font(font, "", 10)
+    for i, it in enumerate(cur["top"][:8], 1):
+        try:
+            pdf.multi_cell(0, 6, s(f"{i}. {it['title'][:70]} — {it['views']:,} views, {it['engagement']:,} engagements"))
+        except Exception:
+            pass
+    return BytesIO(bytes(pdf.output()))
+
+
+@app.route("/api/analytics/monthly-report.pdf")
+def api_monthly_report():
+    u = require_login()
+    db = get_db()
+    month = request.args.get("month") or datetime.utcnow().strftime("%Y-%m")
+    if not re.match(r"^\d{4}-\d{2}$", month):
+        return jsonify({"error": "Month must look like 2026-09."}), 400
+    brand = _rget(u, "active_brand_id")
+    cur, prev, accts, kit, start = monthly_report_data(db, ws_member_ids(db, u), month, billing_user_id(u), brand)
+    company = (db.execute("SELECT name FROM brands WHERE id=?", (brand,)).fetchone() or {"name": None})["name"] if brand else None
+    buf = build_monthly_pdf(cur, prev, accts, kit, start, company or os.environ.get("COMPANY_NAME") or "SocialPlatform")
+    return send_file(buf, as_attachment=True, download_name=f"monthly-report-{month}.pdf", mimetype="application/pdf")
+
+
+@app.route("/api/analytics/monthly-report/email", methods=["POST"])
+def api_monthly_report_email():
+    u = require_login()
+    db = get_db()
+    d = request.get_json(force=True) or {}
+    month = d.get("month") or datetime.utcnow().strftime("%Y-%m")
+    to = (d.get("to") or uget_setting(db, u["id"], "report_email") or u.get("email") or "").strip()
+    if not to:
+        return jsonify({"error": "Enter an email address."}), 400
+    cur, prev, accts, kit, start = monthly_report_data(db, ws_member_ids(db, u), month, billing_user_id(u),
+                                                       _rget(u, "active_brand_id"))
+    pdf = build_monthly_pdf(cur, prev, accts, kit, start, os.environ.get("COMPANY_NAME") or "SocialPlatform").getvalue()
+    ok, msg = send_email(db, to, f"Monthly social media report — {start.strftime('%B %Y')}",
+                         f"Attached: your social media performance for {start.strftime('%B %Y')}.",
+                         [(f"monthly-report-{month}.pdf", pdf, "application/pdf")])
+    if not ok:
+        return jsonify({"error": msg}), 400
+    log_activity(db, u, "report_emailed", "", None, f"monthly {month} → {to}")
+    return jsonify({"ok": True})
+
+
+def _monthly_reports():
+    """1st of the month, 09:00+: email last month's branded report to every workspace
+    that set a report email in Setup → Alerts & reports."""
+    try:
+        now = datetime.now()
+        if now.day != 1 or now.hour < 9:
+            return
+        db = db_connect()
+        if not _smtp_cfg(db)["host"]:
+            db.close()
+            return
+        last = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+        for r in db.execute("SELECT key, value FROM settings WHERE key LIKE 'u%_report_email'").fetchall():
+            to = (r["value"] or "").strip()
+            m = re.match(r"u(\d+)_report_email", r["key"])
+            if not (to and m):
+                continue
+            uid = int(m.group(1))
+            if uget_setting(db, uid, "monthly_sent") == last:
+                continue
+            urow = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+            if not urow:
+                continue
+            ud = dict(urow)
+            cur, prev, accts, kit, start = monthly_report_data(db, ws_member_ids(db, ud), last, billing_user_id(ud))
+            pdf = build_monthly_pdf(cur, prev, accts, kit, start, os.environ.get("COMPANY_NAME") or "SocialPlatform").getvalue()
+            ok, _ = send_email(db, to, f"Monthly social media report — {start.strftime('%B %Y')}",
+                               f"Attached: your social media performance for {start.strftime('%B %Y')}.",
+                               [(f"monthly-report-{last}.pdf", pdf, "application/pdf")])
+            if ok:
+                uset_setting(db, uid, "monthly_sent", last)
+        db.close()
+    except Exception:
+        pass
+
+
+@app.route("/api/signup-open")
+def api_signup_open():
+    """Public: lets the login page hide "Create account" when sign-up is closed."""
+    return jsonify({"allow": (get_setting(get_db(), "allow_signup") or "1") != "0"})
+
+
+@app.route("/api/settings/signup", methods=["GET", "POST"])
+def api_signup_setting():
+    u = require_login()
+    db = get_db()
+    if request.method == "POST":
+        if not is_super(u):
+            return jsonify({"error": "Only the SuperAdmin can change this."}), 403
+        set_setting(db, "allow_signup", "1" if (request.get_json(force=True) or {}).get("allow") else "0")
+    return jsonify({"allow": (get_setting(db, "allow_signup") or "1") != "0"})
 
 
 # --------------------------------------------------------------------------- #
@@ -7634,7 +9261,7 @@ def _is_due(r, today, hm, utc_now):
 
 def _scheduler_loop():
     last_sub_check = ""
-    last_stats = last_tokens = last_report = 0
+    last_stats = last_tokens = last_report = last_accounts = last_dms = 0
     while True:
         try:
             db = db_connect()
@@ -7695,6 +9322,13 @@ def _scheduler_loop():
         if t - last_report > 1800:
             last_report = t
             threading.Thread(target=_weekly_reports, daemon=True).start()
+            threading.Thread(target=_monthly_reports, daemon=True).start()
+        if t - last_accounts > 6 * 3600:
+            last_accounts = t
+            threading.Thread(target=_snapshot_all_accounts, daemon=True).start()
+        if t - last_dms > 600:
+            last_dms = t
+            threading.Thread(target=_sync_all_dms, daemon=True).start()
         time.sleep(30)
 
 

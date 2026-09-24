@@ -101,10 +101,12 @@ ORDER = ["instagram", "facebook", "youtube", "twitter", "linkedin", "threads", "
 OAUTH = {
     "instagram": {"auth": "https://www.instagram.com/oauth/authorize", "sep": ",",
                   "scopes": ["instagram_business_basic", "instagram_business_content_publish",
-                             "instagram_business_manage_comments", "instagram_business_manage_insights"]},
+                             "instagram_business_manage_comments", "instagram_business_manage_insights",
+                             "instagram_business_manage_messages"]},
     "facebook":  {"auth": f"https://www.facebook.com/{META_VERSION}/dialog/oauth", "sep": ",",
                   "scopes": ["pages_show_list", "pages_read_engagement", "pages_manage_posts",
-                             "pages_read_user_content", "pages_manage_engagement", "read_insights"]},
+                             "pages_read_user_content", "pages_manage_engagement", "read_insights",
+                             "pages_messaging"]},
     "youtube":   {"auth": "https://accounts.google.com/o/oauth2/v2/auth", "sep": " ",
                   "scopes": ["https://www.googleapis.com/auth/youtube.upload",
                              "https://www.googleapis.com/auth/youtube.force-ssl",
@@ -118,7 +120,7 @@ OAUTH = {
                   "scopes": ["threads_basic", "threads_content_publish", "threads_manage_replies",
                              "threads_read_replies", "threads_manage_insights"]},
     "tiktok":    {"auth": "https://www.tiktok.com/v2/auth/authorize/", "sep": ",", "client_param": "client_key",
-                  "scopes": ["user.info.basic", "video.publish", "video.upload", "video.list"]},
+                  "scopes": ["user.info.basic", "user.info.stats", "video.publish", "video.upload", "video.list"]},
     "pinterest": {"auth": "https://www.pinterest.com/oauth/", "sep": ",",
                   "scopes": ["boards:read", "pins:read", "pins:write", "user_accounts:read"]},
 }
@@ -1087,3 +1089,232 @@ def reply(platform, a, rid, comment_id, text):
         return False, str(e)
     except Exception as e:
         return False, str(e)
+
+
+# --------------------------------------------------------------------------- #
+#  Existing posts (import) → [{"id","caption","permalink","created","media_type","thumb"}]
+# --------------------------------------------------------------------------- #
+def list_posts(platform, a, limit=50):
+    tok = a.get("token")
+    if not tok:
+        return []
+    out = []
+
+    def add(pid, caption, link, created, mtype, thumb):
+        if pid:
+            out.append({"id": str(pid), "caption": caption or "", "permalink": link or "", "created": created or "",
+                        "media_type": (mtype or "").lower(), "thumb": thumb or ""})
+
+    try:
+        if platform == "instagram":
+            url = f"{IG_GRAPH}/{a.get('account_id') or 'me'}/media?" + urllib.parse.urlencode({
+                "fields": "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp",
+                "limit": min(limit, 50), "access_token": tok})
+            for page in _pages(url):
+                for m in page.get("data", []):
+                    add(m.get("id"), m.get("caption"), m.get("permalink"), m.get("timestamp"), m.get("media_type"),
+                        m.get("thumbnail_url") or (m.get("media_url") if m.get("media_type") != "VIDEO" else ""))
+                if len(out) >= limit:
+                    break
+        elif platform == "facebook":
+            url = f"{FB_GRAPH}/{a['account_id']}/published_posts?" + urllib.parse.urlencode({
+                "fields": "id,message,permalink_url,created_time,full_picture,status_type",
+                "limit": min(limit, 50), "access_token": tok})
+            for page in _pages(url):
+                for m in page.get("data", []):
+                    st = (m.get("status_type") or "")
+                    add(m.get("id"), m.get("message"), m.get("permalink_url"), m.get("created_time"),
+                        "video" if "video" in st else ("image" if m.get("full_picture") else "text"), m.get("full_picture"))
+                if len(out) >= limit:
+                    break
+        elif platform == "youtube":
+            hdr = {"Authorization": "Bearer " + tok}
+            ch = _req(f"{YT_API}/channels?part=contentDetails&mine=true", headers=hdr)
+            items = (ch.data or {}).get("items", []) if ch.ok and isinstance(ch.data, dict) else []
+            uploads = ((items[0].get("contentDetails") or {}).get("relatedPlaylists") or {}).get("uploads") if items else ""
+            if uploads:
+                base = f"{YT_API}/playlistItems?part=snippet&maxResults=50&playlistId={uploads}"
+                nxt = lambda d: (base + "&pageToken=" + d["nextPageToken"]) if d.get("nextPageToken") else None
+                for page in _pages(base, headers=hdr, next_of=nxt):
+                    for it in page.get("items", []):
+                        sn = it.get("snippet") or {}
+                        vid = (sn.get("resourceId") or {}).get("videoId")
+                        th = ((sn.get("thumbnails") or {}).get("medium") or {}).get("url", "")
+                        add(vid, (sn.get("title", "") + "\n\n" + sn.get("description", "")).strip(),
+                            f"https://www.youtube.com/watch?v={vid}", sn.get("publishedAt"), "video", th)
+                    if len(out) >= limit:
+                        break
+        elif platform == "twitter":
+            r = _req(f"{X_API}/users/{a['account_id']}/tweets?max_results={max(5, min(limit, 100))}"
+                     "&tweet.fields=created_at&exclude=replies,retweets", headers={"Authorization": "Bearer " + tok})
+            for t in ((r.data or {}).get("data", []) if r.ok and isinstance(r.data, dict) else []):
+                add(t.get("id"), t.get("text"), f"https://x.com/i/web/status/{t.get('id')}", t.get("created_at"), "text", "")
+        elif platform == "threads":
+            url = f"{THREADS_GRAPH}/me/threads?" + urllib.parse.urlencode({
+                "fields": "id,text,permalink,timestamp,media_type,thumbnail_url,media_url",
+                "limit": min(limit, 50), "access_token": tok})
+            for page in _pages(url):
+                for m in page.get("data", []):
+                    add(m.get("id"), m.get("text"), m.get("permalink"), m.get("timestamp"), m.get("media_type"),
+                        m.get("thumbnail_url") or (m.get("media_url") if (m.get("media_type") or "") == "IMAGE" else ""))
+                if len(out) >= limit:
+                    break
+        elif platform == "tiktok":
+            r = _req(f"{TT_API}/video/list/?fields=id,title,video_description,create_time,share_url,cover_image_url",
+                     method="POST", headers={"Authorization": "Bearer " + tok}, json_body={"max_count": 20})
+            for v in (((r.data or {}).get("data") or {}).get("videos", []) if r.ok and isinstance(r.data, dict) else []):
+                ts = v.get("create_time")
+                created = datetime.utcfromtimestamp(int(ts)).isoformat() if ts else ""
+                add(v.get("id"), v.get("video_description") or v.get("title"), v.get("share_url"), created, "video",
+                    v.get("cover_image_url"))
+        elif platform == "pinterest":
+            r = _req(f"{PIN_API}/pins?page_size={min(limit, 100)}", headers={"Authorization": "Bearer " + tok})
+            for p in ((r.data or {}).get("items", []) if r.ok and isinstance(r.data, dict) else []):
+                imgs = ((p.get("media") or {}).get("images") or {})
+                th = (imgs.get("600x") or imgs.get("400x300") or {}).get("url", "")
+                add(p.get("id"), ((p.get("title") or "") + "\n\n" + (p.get("description") or "")).strip(),
+                    f"https://www.pinterest.com/pin/{p.get('id')}/", p.get("created_at"),
+                    (p.get("media") or {}).get("media_type", "image"), th)
+    except Exception:
+        pass
+    return out[:limit]
+
+
+# --------------------------------------------------------------------------- #
+#  Account-level stats → {"followers","reach","impressions","profile_views","media_count"}
+# --------------------------------------------------------------------------- #
+def account_stats(platform, a):
+    out = {"followers": 0, "reach": 0, "impressions": 0, "profile_views": 0, "media_count": 0}
+    tok = a.get("token")
+    if not tok:
+        return out
+    now = int(time.time())
+    try:
+        if platform == "instagram":
+            uid = a.get("account_id") or "me"
+            r = _req(f"{IG_GRAPH}/{uid}?" + urllib.parse.urlencode({"fields": "followers_count,media_count",
+                                                                     "access_token": tok}))
+            if r.ok and isinstance(r.data, dict):
+                out["followers"] = int(r.data.get("followers_count", 0) or 0)
+                out["media_count"] = int(r.data.get("media_count", 0) or 0)
+            ins = _req(f"{IG_GRAPH}/{uid}/insights?" + urllib.parse.urlencode({
+                "metric": "reach,profile_views,views", "period": "day", "metric_type": "total_value",
+                "since": now - 86400, "until": now, "access_token": tok}))
+            for m in ((ins.data or {}).get("data", []) if ins.ok and isinstance(ins.data, dict) else []):
+                v = int(((m.get("total_value") or {}).get("value")) or 0)
+                key = {"reach": "reach", "profile_views": "profile_views", "views": "impressions"}.get(m.get("name"))
+                if key:
+                    out[key] = v
+        elif platform == "facebook":
+            r = _req(f"{FB_GRAPH}/{a['account_id']}?" + urllib.parse.urlencode({
+                "fields": "followers_count,fan_count", "access_token": tok}))
+            if r.ok and isinstance(r.data, dict):
+                out["followers"] = int(r.data.get("followers_count") or r.data.get("fan_count") or 0)
+            ins = _req(f"{FB_GRAPH}/{a['account_id']}/insights?" + urllib.parse.urlencode({
+                "metric": "page_impressions_unique,page_views_total,page_impressions", "period": "day",
+                "access_token": tok}))
+            for m in ((ins.data or {}).get("data", []) if ins.ok and isinstance(ins.data, dict) else []):
+                vals = m.get("values") or [{}]
+                v = int((vals[-1] or {}).get("value", 0) or 0)
+                key = {"page_impressions_unique": "reach", "page_views_total": "profile_views",
+                       "page_impressions": "impressions"}.get(m.get("name"))
+                if key:
+                    out[key] = v
+        elif platform == "youtube":
+            r = _req(f"{YT_API}/channels?part=statistics&mine=true", headers={"Authorization": "Bearer " + tok})
+            items = (r.data or {}).get("items", []) if r.ok and isinstance(r.data, dict) else []
+            if items:
+                st = items[0].get("statistics") or {}
+                out.update(followers=int(st.get("subscriberCount", 0) or 0), impressions=int(st.get("viewCount", 0) or 0),
+                           media_count=int(st.get("videoCount", 0) or 0))
+        elif platform == "twitter":
+            r = _req(f"{X_API}/users/me?user.fields=public_metrics", headers={"Authorization": "Bearer " + tok})
+            pm = ((r.data or {}).get("data") or {}).get("public_metrics", {}) if r.ok and isinstance(r.data, dict) else {}
+            out.update(followers=int(pm.get("followers_count", 0) or 0), media_count=int(pm.get("tweet_count", 0) or 0))
+        elif platform == "threads":
+            r = _req(f"{THREADS_GRAPH}/me/threads_insights?" + urllib.parse.urlencode({
+                "metric": "views,followers_count", "since": now - 86400, "until": now, "access_token": tok}))
+            for m in ((r.data or {}).get("data", []) if r.ok and isinstance(r.data, dict) else []):
+                if m.get("name") == "followers_count":
+                    out["followers"] = int(((m.get("total_value") or {}).get("value")) or 0)
+                elif m.get("name") == "views":
+                    out["impressions"] = sum(int(x.get("value", 0) or 0) for x in (m.get("values") or []))
+        elif platform == "tiktok":
+            r = _req(f"{TT_API}/user/info/?fields=follower_count,likes_count,video_count",
+                     headers={"Authorization": "Bearer " + tok})
+            us = (((r.data or {}).get("data") or {}).get("user") or {}) if r.ok and isinstance(r.data, dict) else {}
+            out.update(followers=int(us.get("follower_count", 0) or 0), media_count=int(us.get("video_count", 0) or 0))
+        elif platform == "pinterest":
+            r = _req(f"{PIN_API}/user_account", headers={"Authorization": "Bearer " + tok})
+            if r.ok and isinstance(r.data, dict):
+                out.update(followers=int(r.data.get("follower_count", 0) or 0),
+                           impressions=int(r.data.get("monthly_views", 0) or 0),
+                           media_count=int(r.data.get("pin_count", 0) or 0))
+    except Exception:
+        pass
+    return out
+
+
+# --------------------------------------------------------------------------- #
+#  Direct messages (Instagram + Facebook Page)
+#  dm_threads → [{"conversation_id","participant_id","participant_name",
+#                 "messages":[{"id","from_id","from_name","text","created"}]}]
+# --------------------------------------------------------------------------- #
+DM_PLATFORMS = ("instagram", "facebook")
+
+
+def dm_threads(platform, a, limit=25):
+    tok = a.get("token")
+    own = str(a.get("account_id") or "")
+    if platform not in DM_PLATFORMS or not tok:
+        return []
+    out = []
+    try:
+        if platform == "instagram":
+            base, conv_url = IG_GRAPH, f"{IG_GRAPH}/me/conversations?"
+            params = {"platform": "instagram", "fields": "id,updated_time,participants,"
+                      "messages.limit(20){id,created_time,from,to,message}", "limit": limit, "access_token": tok}
+        else:
+            base, conv_url = FB_GRAPH, f"{FB_GRAPH}/{own}/conversations?"
+            params = {"platform": "messenger", "fields": "id,updated_time,participants,"
+                      "messages.limit(20){id,created_time,from,to,message}", "limit": limit, "access_token": tok}
+        r = _req(conv_url + urllib.parse.urlencode(params))
+        convs = (r.data or {}).get("data", []) if r.ok and isinstance(r.data, dict) else []
+        for c in convs:
+            parts = ((c.get("participants") or {}).get("data") or [])
+            other = next((p for p in parts if str(p.get("id")) != own), (parts[0] if parts else {}))
+            msgs = []
+            for m in ((c.get("messages") or {}).get("data") or []):
+                frm = m.get("from") or {}
+                msgs.append({"id": m.get("id"), "from_id": str(frm.get("id") or ""),
+                             "from_name": frm.get("username") or frm.get("name") or "",
+                             "text": m.get("message") or "", "created": m.get("created_time") or ""})
+            out.append({"conversation_id": c.get("id"), "participant_id": str(other.get("id") or ""),
+                        "participant_name": other.get("username") or other.get("name") or "Unknown",
+                        "messages": msgs})
+    except Exception:
+        pass
+    return out
+
+
+def dm_send(platform, a, recipient_id, text):
+    """Reply to a direct message. Returns (ok, message, remote_message_id)."""
+    tok = a.get("token")
+    try:
+        if platform == "instagram":
+            r = _req(f"{IG_GRAPH}/me/messages", method="POST", headers={"Authorization": "Bearer " + tok},
+                     json_body={"recipient": {"id": recipient_id}, "message": {"text": text[:1000]}})
+        elif platform == "facebook":
+            r = _req(f"{FB_GRAPH}/{a['account_id']}/messages?access_token={urllib.parse.quote(tok)}", method="POST",
+                     json_body={"recipient": {"id": recipient_id}, "messaging_type": "RESPONSE",
+                                "message": {"text": text[:2000]}})
+        else:
+            return False, "Direct messages aren't available for this platform.", ""
+        if r.ok:
+            return True, "Sent.", (r.data or {}).get("message_id", "") if isinstance(r.data, dict) else ""
+        err = r.err()
+        if "outside of allowed window" in err.lower() or "24" in err and "hour" in err.lower():
+            err = "You can only reply within 24 hours of the person's last message (platform rule)."
+        return False, err, ""
+    except Exception as e:
+        return False, str(e), ""

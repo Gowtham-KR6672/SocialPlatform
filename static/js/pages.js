@@ -63,14 +63,24 @@ function roundedTop(x, y, w, h, r){
 /* ============================================================ ANALYTICS */
 async function renderAnalytics(){
   const c = $('#pageContent'); if(!c) return;
-  App._an = App._an || {days:30, platform:'', metric:'views'};
-  c.innerHTML = `<div class="page-head"><h2>Analytics</h2><div class="spacer"></div>
+  App._an = App._an || {days:30, platform:'', metric:'views', view:'posts'};
+  c.innerHTML = `<div class="page-head"><h2>Analytics</h2>
+      <div class="seg" id="anView" style="margin-left:12px">${[['posts','Posts'],['accounts','Accounts']].map(([k,l])=>`<button data-v="${k}" class="${App._an.view===k?'on':''}">${l}</button>`).join('')}</div>
+      <div class="spacer"></div>
       <select class="f sel-sm" id="anDays">${[7,30,90].map(d=>`<option value="${d}" ${App._an.days===d?'selected':''}>Last ${d} days</option>`).join('')}</select>
       <select class="f sel-sm" id="anPlat"><option value="">All platforms</option>${PLAT_ORDER.map(p=>`<option value="${p}" ${App._an.platform===p?'selected':''}>${platLabel(p)}</option>`).join('')}</select>
       <button class="btn ghost sm" id="anRefresh">${ic('refresh',14)} Refresh stats</button>
       <a class="btn ghost sm" id="anPdf">${ic('download',14)} PDF report</a>
-      <button class="btn ghost sm" id="anMail">${ic('mail',14)} Email report</button></div>
+      <button class="btn ghost sm" id="anMail">${ic('mail',14)} Email report</button>
+      <button class="btn ghost sm" id="anMonthly">${ic('file',14)} Monthly report</button></div>
     <div id="anBody"><div class="loading">Loading…</div></div>`;
+  c.querySelectorAll('#anView button').forEach(b=>b.onclick=()=>{ App._an.view=b.dataset.v; renderAnalytics(); });
+  $('#anMonthly').onclick = openMonthlyReport;
+  if(App._an.view==='accounts'){
+    ['anPlat','anRefresh','anPdf','anMail'].forEach(id=>{ const x=$('#'+id); if(x) x.style.display='none'; });
+    $('#anDays').onchange = e=>{ App._an.days=Number(e.target.value); renderAnalytics(); };
+    renderAccountAnalytics($('#anBody'), App._an.days); return;
+  }
   $('#anDays').onchange = e=>{ App._an.days=Number(e.target.value); renderAnalytics(); };
   $('#anPlat').onchange = e=>{ App._an.platform=e.target.value; renderAnalytics(); };
   $('#anPdf').href = `/api/analytics/report.pdf?days=${App._an.days}`;
@@ -145,7 +155,16 @@ async function renderInbox(){
   const c = $('#pageContent'); if(!c) return;
   App._ib = App._ib || {status:'new', platform:'', sentiment:''};
   const f = App._ib;
-  c.innerHTML = `<div class="page-head"><h2>Inbox</h2><div class="spacer"></div>
+  App._ibView = App._ibView || 'comments';
+  const viewSeg = `<div class="seg" id="ibView" style="margin-left:12px">${[['comments','Comments'],['messages','Messages']].map(([k,l])=>`<button data-v="${k}" class="${App._ibView===k?'on':''}">${l}</button>`).join('')}</div>`;
+  if(App._ibView==='messages'){
+    c.innerHTML = `<div class="page-head"><h2>Inbox</h2>${viewSeg}<div class="spacer"></div></div>
+      <p class="sub" style="margin:-6px 0 12px">Instagram and Facebook Page direct messages. Replies are sent from your connected account.</p>
+      <div id="ibBody"></div>`;
+    c.querySelectorAll('#ibView button').forEach(b=>b.onclick=()=>{ App._ibView=b.dataset.v; renderInbox(); });
+    renderDMs($('#ibBody')); return;
+  }
+  c.innerHTML = `<div class="page-head"><h2>Inbox</h2>${viewSeg}<div class="spacer"></div>
       <div class="seg" id="ibStatus">${[['new','New'],['replied','Replied'],['done','Done'],['','All']].map(([k,l])=>`<button data-s="${k}" class="${f.status===k?'on':''}">${l}</button>`).join('')}</div>
       <select class="f sel-sm" id="ibPlat"><option value="">All platforms</option>${PLAT_ORDER.map(p=>`<option value="${p}" ${f.platform===p?'selected':''}>${platLabel(p)}</option>`).join('')}</select>
       <select class="f sel-sm" id="ibSent"><option value="">Any sentiment</option>${['negative','neutral','positive'].map(s=>`<option ${f.sentiment===s?'selected':''}>${s}</option>`).join('')}</select>
@@ -155,6 +174,7 @@ async function renderInbox(){
       (Instagram, Facebook, YouTube, X, Threads, LinkedIn). Negative comments trigger an alert.</p>
     <div id="ibBody"><div class="loading">Loading…</div></div>`;
   c.querySelectorAll('#ibStatus button').forEach(b=>b.onclick=()=>{ f.status=b.dataset.s; renderInbox(); });
+  c.querySelectorAll('#ibView button').forEach(b=>b.onclick=()=>{ App._ibView=b.dataset.v; renderInbox(); });
   $('#ibPlat').onchange = e=>{ f.platform=e.target.value; renderInbox(); };
   $('#ibSent').onchange = e=>{ f.sentiment=e.target.value; renderInbox(); };
   $('#ibSync').onclick = async ()=>{ try{ const r=await api('/api/inbox/sync',{method:'POST'}); toast(`${r.new} new comment(s)`,'good'); renderInbox(); }catch(e){ toast(e.message,'warn'); } };
@@ -277,15 +297,45 @@ async function renderTeam(){
       ${u.is_subuser?'':`<div class="row" style="gap:8px;margin:10px 0"><input class="f" id="brName" placeholder="Brand / client name" style="max-width:260px">
         <input type="color" id="brColor" value="#2f7bff" title="Colour"><button class="btn sm" id="brAdd">${ic('plus',14)} Add brand</button></div>`}
       <div id="brList"><div class="loading">Loading…</div></div></div>
+    <div class="card glass" id="bkCard"><div class="loading">Loading…</div></div>
     ${u.is_admin?`<div class="card glass"><h4>${ic('shield',15)} Publishing permissions</h4>
       <p class="sub">Choose which platforms each person may publish to. Everyone can still draft posts.</p>
       <div id="permBody"><div class="loading">Loading…</div></div></div>`:''}
+    ${u.is_super?`<div class="card glass"><h4>${ic('shield',15)} Client accounts</h4>
+      <p class="sub">Every login on this server. Each client (with their Sub-Users) is a separate workspace: they only see their own posts,
+        accounts, inbox and analytics. Reset a password or two-factor login here when a client is locked out.</p>
+      <div id="clBody"><div class="loading">Loading…</div></div></div>`:''}
     ${u.is_primary_user?`<div class="card glass"><h4>${ic('users',15)} Sub-Users</h4>
       <div class="row" style="margin-bottom:12px"><button class="btn sm" id="suAdd">${ic('plus',14)} Create Sub-User</button></div>
       <div id="suBody"><div class="loading">Loading…</div></div></div>`:''}`;
+  // SuperAdmin: client accounts (reset password / 2FA, delete)
+  const loadClients = async ()=>{
+    const box = $('#clBody'); if(!box) return;
+    let d; try{ d = await api('/api/logins'); }catch(e){ box.innerHTML=`<div class="err">${esc(e.message)}</div>`; return; }
+    const byId = Object.fromEntries(d.users.map(x=>[x.id, x]));
+    box.innerHTML = `<div class="rep-table-wrap"><table class="rep-table"><thead><tr><th>Login</th><th>Workspace</th><th>Email</th><th>Two-factor</th><th>Last seen</th><th></th></tr></thead><tbody>
+      ${d.users.map(x=>`<tr><td><b>${esc(x.username)}</b><div class="muted">${esc(x.role_label||'')}</div></td>
+        <td>${x.parent_id && byId[x.parent_id] ? 'Sub-User of <b>'+esc(byId[x.parent_id].username)+'</b>' : (x.is_permanent?'All (SuperAdmin)':'Own workspace')}</td>
+        <td>${esc(x.email||'—')}</td>
+        <td>${x.totp_enabled?`<span class="chip completed">${ic('check',11)} On</span>`:'<span class="chip draft">Off</span>'}</td>
+        <td>${x.online?'<span class="pdot on"></span> Online':esc(x.last_seen?fmtTime(String(x.last_seen).slice(0,19)):'Never')}</td>
+        <td style="white-space:nowrap">${x.is_permanent?'':`<button class="btn ghost xs" data-rpw="${x.id}" data-name="${esc(x.username)}">${ic('key',12)} Password</button>
+          ${x.totp_enabled?`<button class="btn ghost xs" data-r2fa="${x.id}" data-name="${esc(x.username)}">${ic('shield',12)} Reset 2FA</button>`:''}
+          <button class="btn danger xs" data-udel="${x.id}" data-name="${esc(x.username)}" title="Delete login">${ic('trash',12)}</button>`}</td></tr>`).join('')}
+      </tbody></table></div>`;
+    box.querySelectorAll('[data-rpw]').forEach(b=>b.onclick=()=>resetUserPassword(b.dataset.rpw, b.dataset.name));
+    box.querySelectorAll('[data-r2fa]').forEach(b=>b.onclick=()=>confirmBox(`Reset two-factor login for @${b.dataset.name}?`,
+      'They can log in with only their password, then set up two-factor login again from My profile.',
+      async ()=>{ try{ await api(`/api/users/${b.dataset.r2fa}/2fa/reset`,{method:'POST'}); toast('Two-factor login reset','good'); loadClients(); }catch(e){ toast(e.message,'warn'); } }, 'Reset'));
+    box.querySelectorAll('[data-udel]').forEach(b=>b.onclick=()=>confirmBox(`Delete @${b.dataset.name}?`,
+      "This permanently removes the login. A Sub-User's posts move to their main account.",
+      async ()=>{ try{ await api('/api/users/'+b.dataset.udel,{method:'DELETE'}); toast('Login deleted','good'); loadClients(); }catch(e){ toast(e.message,'warn'); } }, 'Delete'));
+  };
+  loadClients();
   // brands
   const loadBrands = async ()=>{
     const d = await api('/api/brands');
+    App._brands = d.brands; renderBrandKit($('#bkCard'));
     $('#brList').innerHTML = d.brands.length ? d.brands.map(b=>`<div class="br-row"><span class="br-dot" style="background:${esc(b.color||'#2f7bff')}"></span>
         <b>${esc(b.name)}</b> ${String(b.id)===String(d.active_brand_id)?'<span class="chip completed">active</span>':''}
         <span class="spacer"></span>
@@ -368,3 +418,29 @@ async function loadActivity(){
   $('#acBody').querySelectorAll('[data-item]').forEach(a=>a.onclick=e=>{ e.preventDefault(); openLinkTarget('calendar:'+a.dataset.item); });
 }
 window.renderActivity = renderActivity;
+
+
+/* Branded monthly PDF report (logo + colours from the brand kit, month-over-month growth) */
+function openMonthlyReport(){
+  const now = new Date(), opts = [];
+  for(let i=1;i<=12;i++){ const d = new Date(now.getFullYear(), now.getMonth()-i+1, 1);
+    opts.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`); }
+  const lab = k=>{ const [y,m]=k.split('-'); return `${MONTHS[Number(m)-1]} ${y}`; };
+  const m = el(`<div class="modal" style="max-width:440px"><div class="modal-head"><h3>${ic('file',18)} Monthly report</h3><button class="x" onclick="closeModal()" aria-label="Close">${ic('x',18)}</button></div>
+    <div class="modal-body">
+      <p class="sub" style="margin-top:0">A branded PDF with your logo and colours (from the Brand kit in Team &amp; Brands),
+        this month's results against last month, and follower growth per account.</p>
+      <label class="f">Month</label><select class="f" id="mr-month">${opts.map((k,i)=>`<option value="${k}" ${i===1?'selected':''}>${lab(k)}${i===0?' (so far)':''}</option>`).join('')}</select>
+      <label class="f">Email to <span class="muted">(optional)</span></label><input class="f" id="mr-to" placeholder="client@company.com">
+      <div class="hint">Leave empty to use the report email from Setup → Alerts &amp; reports. On the 1st of each month last month's report
+        is emailed there automatically (needs the SMTP server in Setup).</div>
+      <div class="err" id="mr-err"></div></div>
+    <div class="modal-foot"><button class="btn ghost" id="mr-send">${ic('send',14)} Email</button><a class="btn" id="mr-dl">${ic('download',14)} Download PDF</a></div></div>`);
+  openModal(m);
+  const upd = ()=>{ $('#mr-dl',m).href = `/api/analytics/monthly-report.pdf?month=${$('#mr-month',m).value}`; };
+  $('#mr-month',m).onchange = upd; upd();
+  $('#mr-send',m).onclick = async ()=>{ $('#mr-err',m).textContent='';
+    try{ await api('/api/analytics/monthly-report/email',{method:'POST', body:{month:$('#mr-month',m).value, to:$('#mr-to',m).value.trim()}});
+      closeModal(); toast('Report sent','good'); }catch(e){ $('#mr-err',m).textContent=e.message; } };
+}
+window.openMonthlyReport = openMonthlyReport;

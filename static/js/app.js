@@ -89,6 +89,8 @@ const NAV_TABS = [
   {key:'analytics',label:'Analytics',       ic:'analytics', group:'Workspace'},
   {key:'inbox',    label:'Inbox',           ic:'inbox',     group:'Workspace', badge:'navInboxCount'},
   {key:'content',  label:'Content Writing', ic:'pen',       group:'Workspace'},
+  {key:'library',  label:'Library',         ic:'folder',    group:'Workspace'},
+  {key:'bio',      label:'Link in bio',     ic:'globe',     group:'Workspace'},
   {key:'reports',  label:'Reports',         ic:'bars',      group:'Workspace'},
   {key:'team',     label:'Team & Brands',   ic:'users',     group:'Account'},
   {key:'activity', label:'Activity Log',    ic:'activity',  group:'Account'},
@@ -96,7 +98,7 @@ const NAV_TABS = [
   {key:'setup',    label:'Setup',           ic:'link',      group:'Account'},
 ];
 // V31 tabs are open to every logged-in user (data inside is still scoped per role)
-const ALWAYS_TABS = ['setup','queue','analytics','inbox','team','activity','notifications'];
+const ALWAYS_TABS = ['setup','queue','analytics','inbox','team','activity','notifications','library','bio'];
 function tabAllowed(key){
   const u = App.user || {};
   if(ALWAYS_TABS.includes(key)) return true;
@@ -207,6 +209,8 @@ async function boot(){
   renderTopbar();
   if(App.user){ renderDashboard(); startHeartbeat(); if(typeof maybeShowOnboarding==='function') maybeShowOnboarding(); }
   else{ renderLanding(); }
+  const rt = new URLSearchParams(location.search).get('reset_token');
+  if(rt){ history.replaceState(null, '', location.pathname); openResetWithToken(rt); }
 }
 
 /* Decorative 3D crystals for the login page (faceted amethyst gem + two glass
@@ -284,6 +288,7 @@ function renderLanding(){
     $('#lg-err').textContent='';
     try{
       const d = await api('/api/login', {method:'POST', body:{username:$('#lg-user').value, password:$('#lg-pass').value}});
+      if(d.need_2fa){ open2faPrompt(); return; }
       App.user = d.user; afterLogin();          // no toast/pop-up on login
     }catch(e){ $('#lg-err').textContent = e.message; }
   };
@@ -291,6 +296,7 @@ function renderLanding(){
   ['lg-user','lg-pass'].forEach(id=>$('#'+id).addEventListener('keydown',e=>{ if(e.key==='Enter'){e.preventDefault();doLoginSubmit();} }));
 
   $('#lnkCreate').onclick = (e)=>{ e.preventDefault(); openCreateAccount(); };
+  api('/api/signup-open').then(r=>{ if(r && r.allow===false){ const a=$('#lnkCreate'); if(a){ a.nextElementSibling && a.nextElementSibling.remove(); a.remove(); } } }).catch(()=>{});
   $('#lnkForgot').onclick = (e)=>{ e.preventDefault(); openForgot(); };
 
   setTimeout(()=>{ const u=$('#lg-user'); if(u) u.focus(); }, 120);
@@ -342,37 +348,83 @@ function openCreateAccount(){
   setTimeout(()=>$('#cr-user',m)&&$('#cr-user',m).focus(),40);
 }
 
-/* Forgot / reset password (dialog) */
+/* Forgot password: emails a one-time reset link (30 minutes) */
 function openForgot(){
   const m = el(`<div class="modal" style="max-width:420px">
-    <div class="modal-head"><h3>Reset password</h3><button class="x" onclick="closeModal()" aria-label="Close">${ic('x',18)}</button></div>
+    <div class="modal-head"><h3>Forgot password</h3><button class="x" onclick="closeModal()" aria-label="Close">${ic('x',18)}</button></div>
     <div class="modal-body">
-      <label class="f">Username</label><input class="f" id="fg-user" placeholder="Your username">
-      <label class="f">New password</label><input class="f" id="fg-pass" type="password" placeholder="New password">
-      <div class="hint">At least 6 characters, with one number and one special character.</div>
-      <label class="f">Confirm new password</label><input class="f" id="fg-pass2" type="password" placeholder="Re-enter new password">
+      <p class="sub" style="margin-top:0">Enter your username. We'll email a reset link to the address on your profile.</p>
+      <label class="f">Username</label><input class="f" id="fg-user" placeholder="Your username" autocomplete="username">
       <div class="err" id="fg-err"></div>
-      <div class="ok-msg hidden" id="fg-ok">${ic('check',14)} Password updated — you can log in now.</div>
+      <div class="ok-msg hidden" id="fg-ok"></div>
     </div>
-    <div class="modal-foot"><button class="btn ghost" onclick="closeModal()">Cancel</button>
-      <button class="btn" id="fg-go">Reset password</button></div></div>`);
+    <div class="modal-foot"><button class="btn ghost" onclick="closeModal()">Close</button>
+      <button class="btn" id="fg-go">${ic('mail',14)} Send reset link</button></div></div>`);
   openModal(m);
   const go = async ()=>{
     $('#fg-err',m).textContent=''; $('#fg-ok',m).classList.add('hidden');
-    const p=$('#fg-pass',m).value, p2=$('#fg-pass2',m).value;
-    const pe=checkPassword(p); if(pe){ $('#fg-err',m).textContent=pe; return; }
-    if(p!==p2){ $('#fg-err',m).textContent='Passwords do not match.'; return; }
     try{
-      await api('/api/reset-password', {method:'POST', body:{username:$('#fg-user',m).value, password:p}});
-      $('#fg-ok',m).classList.remove('hidden');
-      const un=$('#fg-user',m).value;
-      setTimeout(()=>{ closeModal(); const lu=$('#lg-user'); if(lu){lu.value=un; const lp=$('#lg-pass'); if(lp) lp.focus();} }, 1100);
+      const r = await api('/api/reset-password', {method:'POST', body:{username:$('#fg-user',m).value.trim()}});
+      $('#fg-ok',m).innerHTML = `${ic('check',14)} ${esc(r.message||'Check your email for the reset link.')}`;
+      $('#fg-ok',m).classList.remove('hidden'); $('#fg-go',m).disabled = true;
     }catch(e){ $('#fg-err',m).textContent = e.message; }
   };
   $('#fg-go',m).onclick = go;
-  m.querySelectorAll('input').forEach(i=>i.addEventListener('keydown',e=>{ if(e.key==='Enter'){e.preventDefault();go();} }));
+  $('#fg-user',m).addEventListener('keydown',e=>{ if(e.key==='Enter'){e.preventDefault();go();} });
   setTimeout(()=>$('#fg-user',m)&&$('#fg-user',m).focus(),40);
 }
+
+/* Opened from the emailed link (/?reset_token=…) */
+function openResetWithToken(token){
+  const m = el(`<div class="modal" style="max-width:420px">
+    <div class="modal-head"><h3>Choose a new password</h3><button class="x" onclick="closeModal()" aria-label="Close">${ic('x',18)}</button></div>
+    <div class="modal-body">
+      <label class="f">New password</label><input class="f" id="rt-pass" type="password" autocomplete="new-password">
+      <div class="hint">At least 6 characters, with one number and one special character.</div>
+      <label class="f">Confirm new password</label><input class="f" id="rt-pass2" type="password" autocomplete="new-password">
+      <div class="err" id="rt-err"></div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn" id="rt-go">Save password</button></div></div>`);
+  openModal(m);
+  const go = async ()=>{
+    $('#rt-err',m).textContent='';
+    const p=$('#rt-pass',m).value, p2=$('#rt-pass2',m).value;
+    const pe=checkPassword(p); if(pe){ $('#rt-err',m).textContent=pe; return; }
+    if(p!==p2){ $('#rt-err',m).textContent='Passwords do not match.'; return; }
+    try{ await api('/api/reset-password/confirm', {method:'POST', body:{token, password:p}});
+      closeModal(); toast('Password updated — log in with your new password','good',5000); }
+    catch(e){ $('#rt-err',m).textContent = e.message; }
+  };
+  $('#rt-go',m).onclick = go;
+  m.querySelectorAll('input').forEach(i=>i.addEventListener('keydown',e=>{ if(e.key==='Enter'){e.preventDefault();go();} }));
+  setTimeout(()=>$('#rt-pass',m)&&$('#rt-pass',m).focus(),40);
+}
+window.openResetWithToken = openResetWithToken;
+
+/* Second login step when two-factor authentication is on */
+function open2faPrompt(){
+  const m = el(`<div class="modal" style="max-width:400px">
+    <div class="modal-head"><h3>${ic('shield',18)} Two-factor login</h3><button class="x" onclick="closeModal()" aria-label="Close">${ic('x',18)}</button></div>
+    <div class="modal-body">
+      <p class="sub" style="margin-top:0">Enter the 6-digit code from your authenticator app, or one of your recovery codes.</p>
+      <input class="f code-in" id="tf-code" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" maxlength="20">
+      <div class="err" id="tf-err"></div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn" id="tf-go">Verify</button></div></div>`);
+  openModal(m);
+  const go = async ()=>{
+    $('#tf-err',m).textContent='';
+    try{ const d = await api('/api/login/2fa', {method:'POST', body:{code:$('#tf-code',m).value.trim()}});
+      App.user = d.user; closeModal(); afterLogin(); }
+    catch(e){ $('#tf-err',m).textContent = e.message; $('#tf-code',m).select(); }
+  };
+  $('#tf-go',m).onclick = go;
+  $('#tf-code',m).addEventListener('keydown',e=>{ if(e.key==='Enter'){e.preventDefault();go();} });
+  setTimeout(()=>$('#tf-code',m)&&$('#tf-code',m).focus(),40);
+}
+window.open2faPrompt = open2faPrompt;
 
 /* Dashboard shell (side panel + content) */
 function renderDashboard(readonly=false){
@@ -431,6 +483,8 @@ function renderDashboard(readonly=false){
   else if(App.page==='team') renderTeam();
   else if(App.page==='activity') renderActivity();
   else if(App.page==='notifications') renderNotifications();
+  else if(App.page==='library') renderLibrary();
+  else if(App.page==='bio') renderBio();
   else { App.page='input'; renderProduction(); }
   // reflect subscription state (read-only banner / renewal alert) on every page
   if(typeof applySubscriptionState==='function') applySubscriptionState();
@@ -764,6 +818,7 @@ function openLogin(){
     try{
       const d = await api('/api/login', {method:'POST', body:{
         username:$('#li-user',m).value, password:$('#li-pass',m).value}});
+      if(d.need_2fa){ open2faPrompt(); return; }
       App.user = d.user; afterLogin();          // no toast/pop-up on login
     }catch(e){ $('#li-err',m).textContent = e.message; }
   };
@@ -852,16 +907,18 @@ async function openIgSettings(){
 }
 window.openIgSettings = openIgSettings;
 
-/* Profile: edit display name + change password (works for admin and users) */
+/* Profile: display name, email, password and two-factor login */
 function openProfile(){
   const u = App.user||{};
-  const m = el(`<div class="modal" style="max-width:440px">
+  const m = el(`<div class="modal" style="max-width:460px">
     <div class="modal-head"><h3>My profile</h3><button class="x" onclick="closeModal()" aria-label="Close">${ic('x',18)}</button></div>
     <div class="modal-body">
       <label class="f">Display name</label>
       <input class="f" id="pf-name" value="${esc(u.display_name||u.username||'')}">
+      <label class="f">Email <span class="muted">(for password reset links and alerts)</span></label>
+      <input class="f" id="pf-email" type="email" value="${esc(u.email||'')}" placeholder="you@company.com">
       <div class="err" id="pf-err"></div>
-      <button class="btn sm" id="pf-save" style="margin-top:6px">Save name</button>
+      <button class="btn sm" id="pf-save" style="margin-top:6px">Save</button>
       <hr class="sep">
       <label class="f">Change password</label>
       <input class="f" id="pf-cur" type="password" placeholder="Current password" style="margin-bottom:8px">
@@ -869,14 +926,15 @@ function openProfile(){
       <input class="f" id="pf-new2" type="password" placeholder="Confirm new password">
       <div class="err" id="pf-perr"></div>
       <button class="btn sm" id="pf-pwsave" style="margin-top:6px">Update password</button>
-      <div class="note" style="margin-top:14px">Forgot your password? You can reset it from the
-        login screen using the <b>Forgot password?</b> link (by username).</div>
+      <hr class="sep">
+      <label class="f">${ic('shield',14)} Two-factor login</label>
+      <div id="pf-2fa"></div>
     </div></div>`);
   openModal(m);
   $('#pf-save',m).onclick = async ()=>{
     $('#pf-err',m).textContent='';
-    try{ const r = await api('/api/me/profile',{method:'POST', body:{display_name:$('#pf-name',m).value}});
-      App.user = r.user; renderTopbar(); toast('Name updated','good');
+    try{ const r = await api('/api/me/profile',{method:'POST', body:{display_name:$('#pf-name',m).value, email:$('#pf-email',m).value}});
+      App.user = r.user; renderTopbar(); toast('Profile saved','good');
     }catch(e){ $('#pf-err',m).textContent=e.message; }
   };
   $('#pf-pwsave',m).onclick = async ()=>{
@@ -888,6 +946,39 @@ function openProfile(){
       toast('Password updated','good'); $('#pf-cur',m).value=$('#pf-new',m).value=$('#pf-new2',m).value='';
     }catch(e){ $('#pf-perr',m).textContent=e.message; }
   };
+  const box = $('#pf-2fa',m);
+  const draw = ()=>{
+    if((App.user||{}).totp_enabled){
+      box.innerHTML = `<div class="ok-msg">${ic('check',14)} On — you'll be asked for a code from your authenticator app at each login.</div>
+        <details class="tf-off"><summary>Turn off two-factor login</summary>
+          <input class="f" id="tf-pw" type="password" placeholder="Your password" style="margin:8px 0">
+          <input class="f" id="tf-cd" inputmode="numeric" placeholder="Current 6-digit code">
+          <div class="err" id="tf-e"></div><button class="btn danger sm" id="tf-off" style="margin-top:6px">Turn off</button></details>`;
+      $('#tf-off',m).onclick = async ()=>{ try{ await api('/api/2fa/disable',{method:'POST', body:{password:$('#tf-pw',m).value, code:$('#tf-cd',m).value.trim()}});
+          App.user.totp_enabled = false; toast('Two-factor login turned off'); draw(); }catch(e){ $('#tf-e',m).textContent=e.message; } };
+    }else{
+      box.innerHTML = `<p class="sub" style="margin:0 0 8px">Protect your account with a code from Google Authenticator, Microsoft Authenticator or 1Password.</p>
+        <button class="btn ghost sm" id="tf-start">${ic('lock',14)} Set up two-factor login</button>`;
+      $('#tf-start',m).onclick = async ()=>{
+        let r; try{ r = await api('/api/2fa/setup',{method:'POST'}); }catch(e){ toast(e.message,'warn'); return; }
+        box.innerHTML = `<ol class="tf-steps"><li>Scan this QR code in your authenticator app.</li>
+            <li>Enter the 6-digit code it shows.</li></ol>
+          <div class="tf-qr">${r.qr_svg}</div>
+          <div class="hint">Can't scan? Enter this key: <code>${esc(r.secret)}</code></div>
+          <input class="f code-in" id="tf-code" inputmode="numeric" maxlength="6" placeholder="123456" style="margin-top:8px">
+          <div class="err" id="tf-e"></div><button class="btn sm" id="tf-en" style="margin-top:6px">Turn on</button>`;
+        $('#tf-en',m).onclick = async ()=>{ try{ const d = await api('/api/2fa/enable',{method:'POST', body:{code:$('#tf-code',m).value.trim()}});
+            App.user.totp_enabled = true;
+            box.innerHTML = `<div class="ok-msg">${ic('check',14)} Two-factor login is on.</div>
+              <p class="sub"><b>Save these recovery codes</b> somewhere safe. Each one works once if you lose your phone. They won't be shown again.</p>
+              <div class="tf-codes">${d.recovery_codes.map(c=>`<code>${esc(c)}</code>`).join('')}</div>
+              <button class="btn ghost sm" id="tf-copy">${ic('copy',14)} Copy codes</button>`;
+            $('#tf-copy',m).onclick = ()=>{ try{ navigator.clipboard.writeText(d.recovery_codes.join('\n')); toast('Copied','good'); }catch(e){} };
+          }catch(e){ $('#tf-e',m).textContent=e.message; } };
+      };
+    }
+  };
+  draw();
 }
 window.openProfile = openProfile;
 

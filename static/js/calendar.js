@@ -409,6 +409,7 @@ function targetChips(it){
 
 function mediaThumb(it){
   const files = it.media || (it.filename ? [it.filename] : []);
+  if(!files.length && it.external_thumb) return `<a class="vthumb" href="${esc(it.external_url||'#')}" target="_blank" rel="noopener" title="Imported post — open on the platform"><img src="${esc(it.external_thumb)}" alt="" referrerpolicy="no-referrer"></a>`;
   if(!files.length) return `<div class="vthumb txt">${ic('file',20)}</div>`;
   const f = it.thumbnail || files[0];
   const inner = isImg(f) ? `<img src="/uploads/${encodeURIComponent(f)}" alt="">` : `<video src="/uploads/${encodeURIComponent(f)}#t=0.5" muted preload="metadata"></video>`;
@@ -619,9 +620,20 @@ async function openPostEditor(cid, ds){
     <div class="modal-body">
       <section class="pe-sec"><h4>${ic('pen',15)} Content</h4>
         <label class="f">Title</label><input class="f" id="pe-title" value="${esc(it.title||'')}">
-        <label class="f">Master caption <span class="muted">(used for every platform unless customised below)</span></label>
-        <textarea class="f" id="pe-cap" style="min-height:90px">${esc(it.caption||'')}</textarea>
-        <label class="f">Hashtags</label><input class="f" id="pe-tags" value="${esc(it.hashtags||'')}" placeholder="#reels #brand">
+        <div class="lib-anchor"><label class="f">Master caption <span class="muted">(used for every platform unless customised below)</span>
+          <button class="btn ghost xs" id="pe-tpl" type="button" style="float:right">${ic('folder',12)} Insert template</button></label>
+        <textarea class="f" id="pe-cap" style="min-height:90px">${esc(it.caption||'')}</textarea></div>
+        <div class="lib-anchor"><label class="f">Hashtags
+          <button class="btn ghost xs" id="pe-htg" type="button" style="float:right">${ic('folder',12)} Insert hashtags</button></label>
+        <input class="f" id="pe-tags" value="${esc(it.hashtags||'')}" placeholder="#reels #brand"></div>
+        <div class="pe-grid">
+          <div><label class="f">Website link <span class="muted">(tracked per platform)</span></label>
+            <input class="f" id="pe-link" type="url" value="${esc(it.link_url||'')}" placeholder="https://yourshop.com/offer"></div>
+          <div><label class="f">Campaign name <span class="muted">(utm_campaign)</span></label>
+            <input class="f" id="pe-camp" value="${esc(it.link_campaign||'')}" placeholder="Defaults to the post title"></div>
+        </div>
+        <div class="hint">Put <code>{link}</code> in the caption where the link should go, or it's added at the end. Each platform gets its own short link,
+          so Link in bio &rarr; Website clicks shows which post and platform sent visitors. Instagram captions can't hold clickable links, so it's left out there.</div>
       </section>
       <section class="pe-sec"><h4>${ic('send',15)} Platforms &amp; format</h4>
         <div id="pe-plats"></div>
@@ -684,6 +696,11 @@ async function openPostEditor(cid, ds){
     m.querySelectorAll('.pe-yt').forEach(x=>x.style.display = sel.includes('youtube') ? '' : 'none');
   };
   picker.el.querySelectorAll('.pp').forEach(b=>b.addEventListener('click', renderCaps));
+  $('#pe-tpl',m).onclick = (e)=>pickLibrary('caption', t=>{ const ta=$('#pe-cap',m);
+      ta.value = ta.value.trim() ? ta.value.trimEnd()+'\n\n'+t.body : t.body; renderCaps(); ta.focus(); }, e.currentTarget);
+  $('#pe-htg',m).onclick = (e)=>pickLibrary('hashtags', t=>{ const inp=$('#pe-tags',m);
+      const have = new Set(inp.value.split(/\s+/).filter(Boolean));
+      inp.value = [...have, ...t.body.split(/\s+/).filter(x=>x && !have.has(x))].join(' '); renderCaps(); }, e.currentTarget);
   $('#pe-cap',m).addEventListener('input', renderCaps); $('#pe-tags',m).addEventListener('input', renderCaps);
   renderCaps();
 
@@ -693,7 +710,8 @@ async function openPostEditor(cid, ds){
     const body = {title:$('#pe-title',m).value, caption:$('#pe-cap',m).value, hashtags:$('#pe-tags',m).value,
       platforms:plats, platform_captions:Object.fromEntries(plats.map(p=>[p, pc[p]||''])),
       content_type:$('#pe-type',m).value, yt_title:$('#pe-yttitle',m).value, yt_privacy:$('#pe-ytpriv',m).value,
-      recycle_days:Number($('#pe-recycle',m).value||0), auto_publish:$('#pe-auto',m).checked};
+      recycle_days:Number($('#pe-recycle',m).value||0), auto_publish:$('#pe-auto',m).checked,
+      link_url:$('#pe-link',m).value.trim(), link_campaign:$('#pe-camp',m).value.trim()};
     const nd = $('#pe-date',m).value, nt = $('#pe-time',m).value;
     if(!locked && (nd!==schedDate || nt!==schedTime)){
       body.date = nd; body.publish_time = nt; body.publish_at = nt ? toUtcIso(nd, nt) : null; body.tz = userTz();

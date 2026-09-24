@@ -63,7 +63,9 @@ function pubCard(it){
   const files = it.media || (it.filename?[it.filename]:[]);
   const card = el(`<div class="pubcard" data-pub="${it.id}">
      <div class="pub-main">
-       <div class="t">${esc(it.title)} <span class="chip ${it.publish_state==='partial'?'gold':'completed'}">${it.publish_state==='partial'?'Partly published':'Published'}</span></div>
+       <div class="t">${it.external_thumb?`<img class="pub-ext" src="${esc(it.external_thumb)}" alt="" referrerpolicy="no-referrer">`:''}${esc(it.title)}
+         <span class="chip ${it.publish_state==='partial'?'gold':'completed'}">${it.publish_state==='partial'?'Partly published':'Published'}</span>
+         ${it.source==='imported'?`<span class="chip draft" title="Published outside the dashboard and imported">${ic('download',11)} Imported</span>`:''}</div>
        <div class="cap">${esc(it.caption||'—')}</div>
        <div class="tags">${esc(it.hashtags||'')}</div>
        <div class="meta">Published ${esc(it.published_date||it.date||'—')} · by ${esc(it.owner||'—')}</div>

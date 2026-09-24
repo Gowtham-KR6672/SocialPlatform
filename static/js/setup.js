@@ -48,9 +48,11 @@ const PLATFORM_GUIDES = {
 
 async function renderSetup(){
   const c = $('#pageContent'); if(!c) return;
+  const isSuper = !!(App.user||{}).is_super;
   c.innerHTML = `<div class="panel-head"><h2>Setup</h2>
-      <p class="sub">Connect your own social accounts. For each platform, add your App ID and Secret
-      (click <b>Guide</b> for the steps), save, then click <b>Connect</b> and sign in.</p></div>
+      <p class="sub">${isSuper
+        ? 'Enter <b>one approved app per platform</b> (click <b>Guide</b> for the steps). Every client connects through these apps, so clients only click <b>Connect</b> and sign in.'
+        : 'Click <b>Connect</b> next to a platform and sign in to link your account. Your accounts and data are visible only to your workspace.'}</p></div>
     <div id="setupBody"><div class="loading">Loading…</div></div>`;
   let d, cfg = {}, al = {};
   try{ d = await api('/api/platforms'); }
@@ -103,6 +105,29 @@ async function renderSetup(){
         `<option value="${esc(x.id)}" ${x.id===p.board_id?'selected':''}>${esc(x.name||x.id)}</option>`).join('')}</select></label>`;
     return '';
   };
+  const credInputs = (p)=>`
+        <div class="pf-cred">
+          <input class="f" id="pf-id-${p.key}" value="${esc(p.app_id||'')}" placeholder="${esc(p.id_label)}">
+          <input class="f" id="pf-sec-${p.key}" type="password" placeholder="${p.secret_set?'•••••• (set)':esc(p.secret_label)}">
+          <button class="btn ghost sm" data-savecred="${p.key}">${ic('save',14)} Save</button>
+        </div>
+        <div class="pf-redirect" title="Register this exact URL in the ${esc(p.label)} developer console">
+          <span>Redirect URI</span><code>${esc(p.redirect_uri)}</code>
+          <button class="icon-btn sm" data-copy="${esc(p.redirect_uri)}" title="Copy">${ic('copy',14)}</button></div>`;
+  const credBlock = (p)=>{
+    if(p.is_super) return `<div class="pf-scope">${ic('building',12)} Platform app — used by every client</div>` + credInputs(p);
+    if(p.platform_ready && p.source!=='own')
+      return `<details class="pf-own"><summary>Use your own ${esc(p.label)} app instead (optional)</summary>${credInputs(p)}</details>`;
+    if(p.source==='own')
+      return `<div class="pf-scope">${ic('key',12)} Using your own app</div>` + credInputs(p);
+    return `<div class="hint">Not set up yet — ask your administrator to add the ${esc(p.label)} app.</div>
+      <details class="pf-own"><summary>Or add your own ${esc(p.label)} app</summary>${credInputs(p)}</details>`;
+  };
+  const credChip = (p)=>{
+    if(p.is_super) return p.installed?`<span class="chip completed">App set</span>`:`<span class="chip gold">App needed</span>`;
+    if(p.installed) return p.connected?'':`<span class="chip completed">${ic('check',12)} Ready — click Connect</span>`;
+    return `<span class="chip gold">Not available yet</span>`;
+  };
   const rows = d.platforms.map(p=>`
     <div class="pf-row glass" data-plat="${p.key}">
       <div class="pf-left"><span class="pf-ic">${pi(p.key, 26)}</span>
@@ -111,19 +136,14 @@ async function renderSetup(){
           ${p.last_error?`<div class="pf-err">${ic('alert',12)} ${esc(p.last_error)}</div>`:''}
           ${!p.allowed?`<div class="pf-err">${ic('lock',12)} You don't have publishing rights here</div>`:''}</div></div>
       <div class="pf-right">
-        <div class="pf-cred">
-          <input class="f" id="pf-id-${p.key}" value="${esc(p.app_id||'')}" placeholder="${esc(p.id_label)}">
-          <input class="f" id="pf-sec-${p.key}" type="password" placeholder="${p.secret_set?'•••••• (set)':esc(p.secret_label)}">
-          <button class="btn ghost sm" data-savecred="${p.key}">${ic('save',14)} Save</button>
-        </div>
-        <div class="pf-redirect" title="Register this exact URL in the ${esc(p.label)} developer console">
-          <span>Redirect URI</span><code>${esc(p.redirect_uri)}</code>
-          <button class="icon-btn sm" data-copy="${esc(p.redirect_uri)}" title="Copy">${ic('copy',14)}</button></div>
-        <div class="pf-status">${p.installed?`<span class="chip completed">Credentials set</span>`:`<span class="chip gold">Credentials needed</span>`}
+        ${credBlock(p)}
+        <div class="pf-status">${credChip(p)}
           ${statusChip(p)} ${optionPicker(p)}
           <button class="btn sm ${p.connected?'ghost':'grad-btn'}" data-conn="${p.key}">${p.connected?'Disconnect':'Connect'}</button>
-          <button class="btn ghost sm" data-guide="${p.key}">${ic('file',14)} Guide</button>
+          ${p.connected?`<button class="btn ghost sm" data-import="${p.key}" title="Bring in posts you published before, with their comments and stats">${ic('download',14)} Import posts</button>`:''}
+          ${(p.is_super || !p.platform_ready || p.source==='own')?`<button class="btn ghost sm" data-guide="${p.key}">${ic('file',14)} Guide</button>`:''}
         </div>
+        ${p.connected && p.imported_at?`<div class="hint">Imported past posts · ${esc(fmtTime(String(p.imported_at).slice(0,19)))}</div>`:''}
       </div></div>`).join('');
 
   const alertsCard = `
@@ -153,7 +173,19 @@ async function renderSetup(){
       </div>
     </div>`;
 
-  $('#setupBody').innerHTML = credCard + `<div class="pf-grid">${rows}</div>` + alertsCard;
+  let signup = null;
+  if(isSuper){ try{ signup = (await api('/api/settings/signup')).allow; }catch(e){} }
+  const signupCard = signup===null ? '' : `
+    <div class="card glass setup-card">
+      <div class="sc-title">${ic('users',16)} <b>Client sign-up</b></div>
+      <label class="cred-toggle"><input type="checkbox" id="su-allow" ${signup?'checked':''}>
+        <span>Anyone can create an account from the login page</span></label>
+      <div class="hint">Turn this off once your clients are set up. You can still create accounts for them yourself.</div>
+    </div>`;
+  $('#setupBody').innerHTML = credCard + `<div class="pf-grid">${rows}</div>` + alertsCard + signupCard;
+  const sua = $('#su-allow');
+  if(sua) sua.onchange = async ()=>{ try{ await api('/api/settings/signup',{method:'POST', body:{allow:sua.checked}});
+      toast(sua.checked?'Sign-up is open':'Sign-up is closed','good'); }catch(e){ toast(e.message,'warn'); sua.checked=!sua.checked; } };
 
   const scb = $('#sc-savecred');
   if(scb) scb.onclick = async ()=>{
@@ -183,6 +215,12 @@ async function renderSetup(){
     try{ await api('/api/platforms/'+k+'/option',{method:'POST', body:bd}); toast('Saved','good'); renderSetup(); }
     catch(e){ toast(e.message,'warn'); }
   });
+  body.querySelectorAll('[data-import]').forEach(b=>b.onclick=async ()=>{
+    const k=b.dataset.import; b.disabled=true; const old=b.innerHTML; b.innerHTML=`${ic('hourglass',14)} Importing…`;
+    try{ const r = await api('/api/platforms/'+k+'/import',{method:'POST'});
+      toast(`${platLabel(k)}: imported ${r.imported} post(s) (${r.found} found). They appear in Published, Analytics and the Inbox.`,'good',6000); renderSetup(); }
+    catch(e){ toast(e.message,'warn',6000); b.disabled=false; b.innerHTML=old; }
+  });
   body.querySelectorAll('[data-conn]').forEach(b=>b.onclick=async ()=>{
     const p = d.platforms.find(x=>x.key===b.dataset.conn);
     if(p.connected){
@@ -194,9 +232,13 @@ async function renderSetup(){
       return;
     }
     // save whatever was typed in this row first, so Connect works without a separate Save click
-    const id = $('#pf-id-'+p.key).value.trim(), sec = $('#pf-sec-'+p.key).value.trim();
+    const idEl = $('#pf-id-'+p.key), secEl = $('#pf-sec-'+p.key);
+    const id = idEl.value.trim(), sec = secEl.value.trim();
+    if(p.installed && id===(p.app_id||'') && !sec){ connectLive(p); return; }
     if(!id || (!sec && !p.secret_set)){
-      toast(`Enter your ${p.label} App ID and Secret first (see Guide)`,'warn',5000);
+      const det = idEl.closest('details'); if(det) det.open = true;
+      toast(p.is_super ? `Enter the ${p.label} App ID and Secret first (see Guide)`
+                       : `${p.label} isn't set up yet — ask your administrator, or add your own app`,'warn',5000);
       $(!id ? '#pf-id-'+p.key : '#pf-sec-'+p.key).focus(); return;
     }
     if(id !== (p.app_id||'') || sec){
