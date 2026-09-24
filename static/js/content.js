@@ -1,6 +1,6 @@
 /* ============================================================
    Content Writing panel
-   Enter a title -> the Claude API writes the full content,
+   Enter a title -> the chosen AI provider writes the full content,
    following the SuperAdmin's content-writing guidelines.
    ============================================================ */
 async function renderContent(){
@@ -274,59 +274,35 @@ async function loadContentHistory(){
   }catch(e){ box.innerHTML=''; }
 }
 
-/* AI settings for content (Claude API key + model + writing guidelines).
+/* AI settings for content (provider, key, model + writing guidelines).
    Visible only to credential-holders (SuperAdmin or a granted user). */
 async function openContentSettings(){
   let s = App._contentSettings || {};
   try{ s = await api('/api/settings/content'); }catch(e){}
-  if(!s.can_view_creds){
+  if(!s.can_view_creds || !s.ai){
     toast('Only the SuperAdmin can change AI credentials.','warn'); return;
   }
-  // pull the current model + guidelines from the unified credentials endpoint
   let cfg = {};
   try{ cfg = await api('/api/oauth/config'); }catch(e){}
-  const m = el(`<div class="modal">
-    <div class="modal-head"><h3>AI settings</h3><button class="x" onclick="closeModal()" aria-label="Close">${ic('x',18)}</button></div>
+  const m = el(`<div class="modal" style="max-width:760px">
+    <div class="modal-head"><h3>${ic('sparkles',18)} AI settings</h3><button class="x" onclick="closeModal()" aria-label="Close">${ic('x',18)}</button></div>
     <div class="modal-body">
-      <label class="f">API key ${s.claude_key_set?'(set — leave blank to keep)':''}</label>
-      <input class="f" id="cs-ckey" type="password" placeholder="${s.claude_key_set?'••••••••':'Enter your AI API key'}">
-      <label class="f">Model</label>
-      <input class="f" id="cs-model" value="${esc(cfg.claude_model||s.claude_model||'')}" placeholder="claude-3-5-sonnet-latest">
+      <label class="f">AI provider</label>
+      <div id="cs-ai">${aiSettingsHTML(s.ai)}</div>
       <label class="f">Content-writing guidelines</label>
       <textarea class="f" id="cs-guide" rows="5" placeholder="Tone, voice, do/don't, brand rules… applied to captions and written content.">${esc(cfg.content_guidelines||'')}</textarea>
-      <div class="note">The API key is stored server-side and used only to call the AI API.
-        Guidelines are applied to both Caption &amp; Hashtags and Content Writing.
-        Never paste keys into chat or other public places.</div>
-      <div id="cs-test-result" class="cs-test"></div>
+      <div class="note">Keys are stored encrypted on the server and used only to call the chosen AI provider.
+        Guidelines are applied to Caption &amp; Hashtags and Content Writing. Never paste keys into chat or other public places.</div>
       <div class="err" id="cs-err"></div>
     </div>
     <div class="modal-foot">
-      <button class="btn ghost" id="cs-test">Test connection</button>
-      <div style="flex:1"></div>
       <button class="btn ghost" onclick="closeModal()">Cancel</button>
       <button class="btn" id="cs-save">Save</button></div></div>`);
   openModal(m);
-  const settingsBody = ()=>{
-    const body={};
-    const k=$('#cs-ckey',m).value.trim(); if(k) body.claude_api_key=k;
-    body.claude_model=$('#cs-model',m).value.trim();
-    body.content_guidelines=$('#cs-guide',m).value;
-    return body;
-  };
-  $('#cs-test',m).onclick = async ()=>{
-    const res=$('#cs-test-result',m); res.className='cs-test'; res.textContent='Testing…';
-    const btn=$('#cs-test',m); btn.disabled=true;
-    try{
-      const b={}; const k=$('#cs-ckey',m).value.trim(); if(k) b.claude_api_key=k;
-      b.claude_model=$('#cs-model',m).value.trim();
-      const r = await api('/api/settings/content/test',{method:'POST', body:b});
-      res.className = 'cs-test '+(r.ok?'ok':'bad');
-      res.innerHTML = ic(r.ok?'check':'x',13)+' '+esc(r.message);
-    }catch(e){ res.className='cs-test bad'; res.innerHTML=ic('x',13)+' '+esc(e.message); }
-    finally{ btn.disabled=false; }
-  };
+  const ctl = bindAiSettings($('#cs-ai',m), s.ai);
   $('#cs-save',m).onclick = async ()=>{
-    try{ await api('/api/settings/content',{method:'POST', body:settingsBody()}); toast('AI settings saved','good');
+    const body = Object.assign(ctl.collect(), {content_guidelines:$('#cs-guide',m).value});
+    try{ await api('/api/settings/content',{method:'POST', body}); toast('AI settings saved','good');
       closeModal(); renderContent(); if(window.loadAiStatus) loadAiStatus(); }
     catch(e){ $('#cs-err',m).textContent=e.message; }
   };

@@ -90,10 +90,11 @@ function placeArt(head){
   const art = head.querySelector('.ph-art'); if(!art) return;
   const act = head.querySelector('.ph-actions'), title = head.querySelector('.ph-title');
   const aw = act ? act.offsetWidth : 0, tw = title ? title.offsetWidth : 0, W = head.clientWidth;
-  const free = W - tw - aw, fits = free >= 300;
-  art.classList.toggle('dim', !fits);
-  art.style.right = (fits ? Math.max(0, aw - 40) : 0) + 'px';
-  const svg = art.querySelector('svg'); if(svg) svg.style.width = (fits ? Math.min(420, free + 70) : 420) + 'px';
+  // leave a clear gap on both sides; hide the art when there isn't room for it
+  const GAP = 44, room = W - tw - aw - GAP*2, fits = room >= 240;
+  art.classList.toggle('off', !fits);
+  art.style.right = (aw ? aw + GAP : 0) + 'px';
+  const svg = art.querySelector('svg'); if(svg) svg.style.width = Math.min(420, Math.max(240, room)) + 'px';
 }
 let _artT = null;
 window.addEventListener('resize', ()=>{ clearTimeout(_artT); _artT = setTimeout(()=>document.querySelectorAll('.hero-head').forEach(placeArt), 150); });

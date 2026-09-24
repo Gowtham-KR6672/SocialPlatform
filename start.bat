@@ -24,7 +24,7 @@ if not defined PYEXE (
 echo   Using Python: %PYEXE%
 
 REM -- ensure required packages (verify the EXACT imports the app uses) ------
-"%PYEXE%" -c "import flask; from docx import Document; from fpdf import FPDF" >nul 2>nul
+"%PYEXE%" -c "import flask, cryptography, qrcode; from docx import Document; from fpdf import FPDF" >nul 2>nul
 if errorlevel 1 (
     echo   Installing required packages...
     "%PYEXE%" -m pip install --quiet -r requirements.txt

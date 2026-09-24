@@ -110,6 +110,27 @@ def _supabase_public_url(fname):
             f"{SUPABASE_BUCKET}/{urllib.parse.quote(fname)}")
 
 
+def _local_upload(fname):
+    """Local path of an uploaded file, fetching it back from Supabase Storage when the
+    ephemeral disk no longer has it. Returns "" when it can't be found."""
+    if not fname:
+        return ""
+    local = os.path.join(UPLOAD_DIR, os.path.basename(fname))
+    if os.path.exists(local):
+        return local
+    url = _supabase_public_url(os.path.basename(fname))
+    if not url:
+        return ""
+    try:
+        with urllib.request.urlopen(url, timeout=120) as r, open(local, "wb") as fh:
+            shutil.copyfileobj(r, fh)
+        return local
+    except Exception:
+        try: os.remove(local)
+        except Exception: pass
+        return ""
+
+
 def _guess_content_type(fname):
     ext = (fname.rsplit(".", 1)[-1] if "." in fname else "").lower()
     return {"mp4": "video/mp4", "mov": "video/quicktime", "webm": "video/webm",
@@ -867,6 +888,7 @@ def init_db():
         ("calendar_items", "external_url", "TEXT"),
         ("calendar_items", "link_url", "TEXT"),           # website link for UTM tracking
         ("calendar_items", "link_campaign", "TEXT"),
+        ("calendar_items", "description", "TEXT"),        # longer text (YouTube, Facebook, LinkedIn, Pinterest)
         ("social_accounts", "imported_at", "TEXT"),
     ]
     for tbl, col, typ in _migrations:
@@ -1462,6 +1484,25 @@ _WS_GUARDS = [
     ("/api/targets/", "tid", "SELECT c.owner_id FROM post_targets t JOIN calendar_items c ON c.id=t.item_id WHERE t.id=?"),
     ("/api/inbox/", "iid", "SELECT c.owner_id FROM inbox_comments i JOIN calendar_items c ON c.id=i.item_id WHERE i.id=?"),
 ]
+
+
+@app.errorhandler(500)
+def _server_error(e):
+    """Record unexpected errors in data/errors.log (and the server log) and give the
+    browser a readable reason instead of a bare 500 page."""
+    import traceback
+    orig = getattr(e, "original_exception", None) or e
+    tb = "".join(traceback.format_exception(type(orig), orig, orig.__traceback__))
+    try:
+        with open(os.path.join(DATA_DIR, "errors.log"), "a", encoding="utf-8") as fh:
+            fh.write(f"\n[{datetime.utcnow().isoformat()}Z] {request.method} {request.path}\n{tb}")
+    except Exception:
+        pass
+    print(f"ERROR {request.method} {request.path}\n{tb}", flush=True)
+    if request.path.startswith("/api/"):
+        return jsonify({"error": f"Server error ({type(orig).__name__}: {str(orig)[:160]}). "
+                                 "Details were saved to data/errors.log."}), 500
+    return "Internal Server Error", 500
 
 
 @app.before_request
@@ -3117,7 +3158,7 @@ class _Cancelled(Exception):
     pass
 
 
-def _run_generation(cid, video_path, original_name, user_id=""):
+def _run_generation(cid, video_path, original_name, user_id="", frames=None):
     # register in the GLOBAL task registry so it shows in the Running Tasks bar
     # on EVERY page (only to the user who started it) and keeps running when the
     # user navigates away.
@@ -3140,19 +3181,18 @@ def _run_generation(cid, video_path, original_name, user_id=""):
             _db.close()
         except Exception:
             kit = None
-        title, cap, tags = generate_caption(video_path, original_name, progress=_prog, kit=kit)
+        title, cap, tags, desc, note = generate_caption(video_path, original_name, progress=_prog, kit=kit,
+                                                         frames=frames)
         db = db_connect()
-        if title:
-            db.execute("UPDATE calendar_items SET title=?, caption=?, hashtags=? WHERE id=?",
-                       (title, cap, tags, cid))
-        else:
-            db.execute("UPDATE calendar_items SET caption=?, hashtags=? WHERE id=?",
-                       (cap, tags, cid))
+        db.execute("UPDATE calendar_items SET title=?, caption=?, hashtags=? WHERE id=?",
+                   (title or original_name, cap, tags, cid))
+        if desc:                          # a template run never wipes a description
+            db.execute("UPDATE calendar_items SET description=? WHERE id=?", (desc, cid))
         db.commit()
         db.close()
         GEN_JOBS[cid] = {"status": "done", "percent": 100,
-                         "message": "Title, caption & hashtags ready.",
-                         "title": title, "caption": cap, "hashtags": tags}
+                         "message": ("Used a basic template: " + note) if note else "Title, caption, description & hashtags ready.",
+                         "warning": note, "title": title, "caption": cap, "hashtags": tags, "description": desc}
         try:
             dbn = db_connect()
             _r = dbn.execute("SELECT owner_id FROM calendar_items WHERE id=?", (cid,)).fetchone()
@@ -3179,11 +3219,25 @@ def api_calendar_generate(cid):
     row = db.execute("SELECT * FROM calendar_items WHERE id=?", (cid,)).fetchone()
     if not row:
         return jsonify({"error": "Not found."}), 404
-    vpath = os.path.join(UPLOAD_DIR, row["filename"] or "")
+    import base64
+    frames = []                           # JPEG frames the browser captured from the video
+    for f in ((request.get_json(silent=True) or {}).get("frames") or [])[:4]:
+        m = re.match(r"^data:image/jpe?g;base64,(.+)$", str(f), re.S)
+        if m:
+            try:
+                raw = base64.b64decode(m.group(1), validate=False)
+            except Exception:
+                continue
+            if 1000 < len(raw) <= 2 * 1024 * 1024:
+                frames.append(raw)
+    files = _item_files(row)
+    vpath = _local_upload(files[0]) if files else ""
+    if not vpath:
+        vpath = os.path.join(UPLOAD_DIR, row["filename"] or "")
     GEN_JOBS[cid] = {"status": "starting", "percent": 0, "message": "Starting…"}
-    threading.Thread(target=_run_generation, args=(cid, vpath, row["title"], u["id"]),
+    threading.Thread(target=_run_generation, args=(cid, vpath, row["title"], u["id"], frames),
                      daemon=True).start()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "frames": len(frames)})
 
 
 @app.route("/api/calendar/<int:cid>/genstatus")
@@ -3335,6 +3389,9 @@ def _public_media_url(db, fname):
     return f"{base}/uploads/{urllib.parse.quote(fname)}" if base.startswith("https://") else ""
 
 
+DESC_PLATFORMS = ("youtube", "facebook", "linkedin", "pinterest")
+
+
 def _caption_for(row, platform, db=None):
     """Caption for one platform. With `db`, a website link on the post becomes a
     UTM-tracked short link: it replaces {link}, or is appended (except Instagram,
@@ -3343,7 +3400,14 @@ def _caption_for(row, platform, db=None):
     if (pc.get(platform) or "").strip():
         text = pc[platform].strip()
     else:
-        text = ((row["caption"] or "") + "\n\n" + (row["hashtags"] or "")).strip()
+        cap, tags = (row["caption"] or "").strip(), (row["hashtags"] or "").strip()
+        desc = (_rget(row, "description") or "").strip()
+        if desc and platform in DESC_PLATFORMS:     # long-form platforms also get the description
+            room = P.PLATFORMS[platform]["caption_max"] - len(cap) - len(tags) - 4
+            desc = P.split_text(desc, room) if room > 40 else ""
+        else:
+            desc = ""
+        text = "\n\n".join(x for x in (cap, desc, tags) if x)
     if (_rget(row, "link_url") or "").strip():
         short = post_link(db, row, platform) if db is not None else "https://example.com/r/xxxxxxx"
         if "{link}" in text:
@@ -4245,6 +4309,7 @@ def adapt_captions(row, plats, kit=None):
         prompt = (
             "You adapt one social media post for several platforms.\n"
             f"TITLE: {row['title']}\nMASTER CAPTION: {caption}\nHASHTAGS: {hashtags}\n"
+            f"DESCRIPTION (use it for YouTube, Facebook, LinkedIn and Pinterest): {_rget(row, 'description') or 'none'}\n"
             f"GUIDELINES FROM THE ACCOUNT OWNER: {_content_guidelines_bg() or 'none'}\n"
             f"{kit_prompt(kit)}\n\n"
             f"Write one caption per platform, following each style note:\n{spec_lines}\n"
@@ -4831,22 +4896,315 @@ def _ollama_text(prompt, model):
         return json.loads(r.read().decode()).get("response", "").strip()
 
 
-def _claude_generate(prompt, api_key, model):
-    """Generate text with the Anthropic Claude Messages API."""
-    body = json.dumps({
-        "model": model or DEFAULT_CLAUDE_MODEL,
-        "max_tokens": 16000,
-        "messages": [{"role": "user", "content": prompt}],
-    }).encode()
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages", data=body,
-        headers={"content-type": "application/json",
-                 "x-api-key": api_key,
-                 "anthropic-version": "2023-06-01"})
-    with urllib.request.urlopen(req, timeout=300) as r:
-        resp = json.loads(r.read().decode())
-    parts = resp.get("content", [])
-    return "".join(p.get("text", "") for p in parts if p.get("type") == "text").strip()
+# --------------------------------------------------------------------------- #
+#  AI providers (V35): Anthropic Claude, Google Gemini, Groq and OpenRouter.
+#  The SuperAdmin picks one in Setup; every AI feature (content writing,
+#  video captions, per-platform captions, reply suggestions, hashtags) uses it.
+#  Each provider keeps its own key (encrypted: *_api_key) and model.
+# --------------------------------------------------------------------------- #
+AI_PROVIDERS = {
+    "claude":     {"label": "Anthropic Claude", "default": DEFAULT_CLAUDE_MODEL, "env": "CLAUDE_API_KEY"},
+    "gemini":     {"label": "Google Gemini", "default": "gemini-2.5-flash", "env": "GEMINI_API_KEY"},
+    "groq":       {"label": "Groq", "default": "llama-3.3-70b-versatile", "env": "GROQ_API_KEY"},
+    "openrouter": {"label": "OpenRouter", "default": "a free model", "env": "OPENROUTER_API_KEY"},
+}
+# When no model is set, pick one the key can actually use (free models come and go).
+AI_MODEL_PREFS = {
+    "gemini":     [r"^gemini-[\d.]+-flash$", r"^gemini-[\d.]+-flash", r"^gemini"],
+    "groq":       [r"llama-3\.3-70b-versatile", r"gpt-oss-120b", r"llama", r"qwen"],
+    "openrouter": [r"llama.*:free$", r"qwen.*:free$", r"gemma.*:free$", r"deepseek.*:free$", r"mistral.*:free$", r":free$"],
+}
+_AI_MODEL_CACHE = {}
+AI_UA = "SocialPlatform/1.0"
+
+
+class _AIKey(str):
+    """An API key that remembers which provider it belongs to, so the many
+    (key, model) call sites keep working whatever provider is chosen."""
+    provider = "claude"
+
+
+def _ai_key(value, provider):
+    k = _AIKey(value or "")
+    k.provider = provider
+    return k
+
+
+def ai_provider_of(db):
+    p = (get_setting(db, "ai_provider") or "claude").strip()
+    return p if p in AI_PROVIDERS else "claude"
+
+
+def ai_creds(db, provider=None):
+    """(key, model) for the chosen provider (or the one given)."""
+    p = provider if provider in AI_PROVIDERS else ai_provider_of(db)
+    key = get_setting(db, f"{p}_api_key") or os.environ.get(AI_PROVIDERS[p]["env"], "").strip()
+    model = get_setting(db, f"{p}_model") or ""        # blank = pick automatically (_auto_model)
+    return _ai_key(key, p), model
+
+
+def _ai_error_text(e):
+    try:
+        raw = e.read().decode("utf-8", "replace")
+    except Exception:
+        return str(e)
+    try:
+        j = json.loads(raw)
+        if isinstance(j, list) and j:
+            j = j[0]
+        err = j.get("error") if isinstance(j, dict) else None
+        if isinstance(err, dict) and err.get("message"):
+            msg = str(err["message"])
+            meta = err.get("metadata") if isinstance(err.get("metadata"), dict) else {}
+            detail = str(meta.get("raw") or "").strip()
+            if detail and detail not in msg:
+                msg += f" — {meta.get('provider_name') + ': ' if meta.get('provider_name') else ''}{detail}"
+            return msg[:400]
+        if isinstance(err, str):
+            return err[:400]
+    except Exception:
+        pass
+    return raw[:400]
+
+
+def _ai_request(url, headers, payload=None, timeout=300):
+    hdrs = {"User-Agent": AI_UA, "Accept": "application/json"}
+    hdrs.update(headers)
+    data = None
+    if payload is not None:
+        hdrs["Content-Type"] = "application/json"
+        data = json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=data, headers=hdrs)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"HTTP {e.code}: {_ai_error_text(e)}") from None
+
+
+_AI_LIST_CACHE = {}
+
+
+def _cached_models(p, key):
+    """_list_ai_models, cached for 6 hours (None when the list can't be fetched)."""
+    hit = _AI_LIST_CACHE.get(p)
+    if hit and time.time() - hit[0] < 6 * 3600:
+        return hit[1]
+    try:
+        models = _list_ai_models(p, key)
+    except Exception:
+        return None
+    _AI_LIST_CACHE[p] = (time.time(), models)
+    return models
+
+
+def _model_sees(p, key, model):
+    """True / False when the provider's list says whether `model` reads images, else None."""
+    for m in (_cached_models(p, key) or []):
+        if m["id"] == model:
+            return bool(m["vision"])
+    return None
+
+
+NO_VISION_HELP = ("Pick a model marked “reads images” (Setup → AI provider → Load models), clear the Model box "
+                  "to choose one automatically, or switch to Google Gemini, which can watch the whole video.")
+
+
+def _chat_request(provider, key, url, hdr, body, see):
+    """Send an OpenAI-style chat request with the recoveries users actually hit:
+    a text-only model given images (switch to one that reads images), low OpenRouter
+    credit on a paid model (shorter reply), and busy free models (clear advice)."""
+    switched = False
+    for _ in range(3):
+        try:
+            return _ai_request(url, hdr, body)
+        except RuntimeError as e:
+            msg = str(e)
+            if see and not switched and re.match(r"HTTP (400|404)", msg) and re.search(r"image|vision|multimodal", msg, re.I):
+                switched = True
+                vis = [m for m in _auto_models(provider, key, vision=True)       # ("a free model" is a label, not an id)
+                       if m != body.get("model") and not (provider == "openrouter" and m == AI_PROVIDERS[provider]["default"])]
+                if vis:
+                    body["model"] = vis[0]
+                    if provider == "openrouter":
+                        body["models"] = vis[:3]
+                    continue
+                raise RuntimeError(f"{msg}. The chosen model can't read images. {NO_VISION_HELP}") from None
+            if see and switched and re.match(r"HTTP (400|404)", msg) and re.search(r"image|vision|multimodal", msg, re.I):
+                raise RuntimeError(f"{msg}. No model that reads images answered. {NO_VISION_HELP}") from None
+            afford = re.search(r"can only afford (\d+)", msg)
+            if provider == "openrouter" and msg.startswith("HTTP 402"):
+                # low credit on a paid model: retry with a reply short enough to afford
+                if afford and int(afford.group(1)) >= 400 and body.get("max_tokens", 0) > int(afford.group(1)) - 50:
+                    body["max_tokens"] = int(afford.group(1)) - 50
+                    continue
+                raise RuntimeError(f"{msg}. “{body.get('model')}” is a paid model and your OpenRouter credit is too low. "
+                                   "Clear the Model box (automatic free models) or pick one ending in “:free”, "
+                                   "or add credit on OpenRouter.") from None
+            if provider == "openrouter" and msg.startswith("HTTP 429"):
+                raise RuntimeError(f"{msg}. Free OpenRouter models are shared and often busy — wait a minute and try "
+                                   "again, or pick a different model ending in “:free” (Load models). Accounts "
+                                   "without credit also get only a small number of free requests per day.") from None
+            if provider == "groq" and msg.startswith("HTTP 429"):
+                raise RuntimeError(f"{msg}. Groq's free plan has per-minute and per-day limits — wait and try again.") from None
+            raise
+    raise RuntimeError("The AI request kept failing — please try again in a minute.")
+
+
+def _ai_complete(provider, key, model, text, images=(), max_tokens=None, video=None):
+    """One prompt (plus optional JPEG frames) -> reply text, for any provider.
+    `video` = (bytes, mime) sends the whole video, which only Gemini accepts."""
+    import base64
+    imgs = [base64.b64encode(f).decode() for f in images]
+    auto = not (model or "").strip()
+    see = bool(imgs or video)
+    model = (model or _auto_model(provider, key, vision=see)).strip()
+    if provider == "gemini":
+        name = model.split("/", 1)[1] if model.startswith("models/") else model
+        parts = [{"inline_data": {"mime_type": "image/jpeg", "data": b}} for b in imgs] + [{"text": text}]
+        if video:
+            parts.insert(0, {"inline_data": {"mime_type": video[1], "data": base64.b64encode(video[0]).decode()}})
+        resp = _ai_request(
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{urllib.parse.quote(name, safe='-._')}:generateContent",
+            {"x-goog-api-key": key},
+            {"contents": [{"role": "user", "parts": parts}],
+             "generationConfig": {"maxOutputTokens": max_tokens or 8192}})
+        cands = resp.get("candidates") or []
+        if not cands:
+            why = (resp.get("promptFeedback") or {}).get("blockReason")
+            raise RuntimeError("Gemini returned no answer" + (f" (blocked: {why})" if why else "") + ".")
+        out = "".join(p.get("text", "") for p in (cands[0].get("content") or {}).get("parts", [])
+                      if not p.get("thought"))
+    elif provider in ("groq", "openrouter"):
+        content = text if not imgs else (
+            [{"type": "text", "text": text}] +
+            [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + b}} for b in imgs])
+        if see and not auto and _model_sees(provider, key, model) is False:
+            model, auto = _auto_model(provider, key, vision=True), True   # the chosen model is text-only
+        if provider == "openrouter" and model == AI_PROVIDERS["openrouter"]["default"]:   # label, not a model id
+            raise RuntimeError("OpenRouter has no free model " + ("that reads images " if see else "") +
+                               "available right now. " + (NO_VISION_HELP if see else "Pick a model in Setup → AI provider."))
+        body = {"model": model, "messages": [{"role": "user", "content": content}]}
+        if provider == "groq":
+            url, hdr = "https://api.groq.com/openai/v1/chat/completions", {}
+            body["max_completion_tokens"] = max_tokens or 8000
+        else:
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            hdr = {"HTTP-Referer": os.environ.get("RENDER_EXTERNAL_URL") or "https://github.com/Gowtham-KR6672/SocialPlatform",
+                   "X-Title": os.environ.get("COMPANY_NAME") or "SocialPlatform"}
+            body["max_tokens"] = max_tokens or 8000
+            if auto:                      # free models are often busy: let OpenRouter fall back
+                body["models"] = _auto_models("openrouter", key, vision=see)
+        hdr["Authorization"] = "Bearer " + key
+        resp = _chat_request(provider, key, url, hdr, body, see)
+        choices = resp.get("choices") or []
+        if not choices:
+            raise RuntimeError(((resp.get("error") or {}).get("message")) or "The AI returned no answer.")
+        out = (choices[0].get("message") or {}).get("content") or ""
+        if isinstance(out, list):
+            out = "".join(x.get("text", "") for x in out if isinstance(x, dict))
+    else:
+        content = [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}} for b in imgs]
+        content.append({"type": "text", "text": text})
+        resp = _ai_request("https://api.anthropic.com/v1/messages",
+                           {"x-api-key": key, "anthropic-version": "2023-06-01"},
+                           {"model": model, "max_tokens": max_tokens or 16000,
+                            "messages": [{"role": "user", "content": content if imgs else text}]})
+        out = "".join(p.get("text", "") for p in resp.get("content", []) if p.get("type") == "text")
+    # some open reasoning models put their thinking inline
+    return re.sub(r"<think>.*?</think>", "", out or "", flags=re.S).strip()
+
+
+def _list_ai_models(p, key):
+    """Models a provider offers: [{id, name, free, vision}] (OpenRouter's free ones first)."""
+    if p == "openrouter":                # public list, no key needed
+        j = _ai_request("https://openrouter.ai/api/v1/models", {}, timeout=30)
+        out = []
+        for m in j.get("data", []):
+            pr = m.get("pricing") or {}
+            free = all(str(pr.get(k, "1")).strip() in ("0", "0.0", "0.00") for k in ("prompt", "completion"))
+            mods = (m.get("architecture") or {}).get("input_modalities") or []
+            out.append({"id": m.get("id"), "name": m.get("name") or m.get("id"), "free": free, "vision": "image" in mods})
+        return sorted(out, key=lambda x: (not x["free"], x["id"] or ""))
+    if not key:
+        raise RuntimeError("Enter the API key first.")
+    if p == "gemini":
+        j = _ai_request("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",
+                        {"x-goog-api-key": key}, timeout=30)
+        out = [{"id": m["name"].split("/", 1)[-1], "name": m.get("displayName") or m["name"], "free": None, "vision": True}
+               for m in j.get("models", [])
+               if "generateContent" in (m.get("supportedGenerationMethods") or [])
+               and not re.search(r"embedding|aqa|tts|image|imagen|veo|live", m["name"])]
+        return sorted(out, key=lambda x: x["id"], reverse=True)        # newest versions first
+    if p == "groq":
+        j = _ai_request("https://api.groq.com/openai/v1/models", {"Authorization": "Bearer " + key}, timeout=30)
+        return sorted(({"id": m["id"], "name": m["id"], "free": None, "vision": "llama-4" in m["id"]}
+                       for m in j.get("data", [])
+                       if m.get("active", True) and not re.search(r"whisper|tts|guard|playai|orpheus", m["id"])),
+                      key=lambda x: x["id"])
+    j = _ai_request("https://api.anthropic.com/v1/models?limit=100",
+                    {"x-api-key": key, "anthropic-version": "2023-06-01"}, timeout=30)
+    return [{"id": m["id"], "name": m.get("display_name") or m["id"], "free": None, "vision": True}
+            for m in j.get("data", [])]
+
+
+def _auto_model(p, key, vision=False):
+    """The model to use when none is set: the usual default if the key offers it,
+    otherwise the best match from the provider's live list. Cached for 6 hours.
+    With vision=True only models that can read images are considered."""
+    if p not in AI_MODEL_PREFS:
+        return AI_PROVIDERS.get(p, AI_PROVIDERS["claude"])["default"]
+    return _auto_models(p, key, vision)[0]
+
+
+def _auto_models(p, key, vision=False):
+    """Best automatic choices, best first (used as fallbacks on OpenRouter). Cached 6 hours."""
+    default = AI_PROVIDERS[p]["default"]
+    ck = p + (":vision" if vision else "")
+    hit = _AI_MODEL_CACHE.get(ck)
+    if hit and time.time() - hit[0] < 6 * 3600:
+        return hit[2]
+    if vision and p == "groq":
+        default = "meta-llama/llama-4-scout-17b-16e-instruct"
+    models = _cached_models(p, key)
+    if models is None:
+        return [default]                  # try again next time
+    ids = [m["id"] for m in models
+           if m["id"] and (m["free"] or p != "openrouter") and (m["vision"] or not vision)]
+    ranked = []
+    for rx in AI_MODEL_PREFS[p]:
+        ranked += [i for i in ids if re.search(rx, i) and i not in ranked]
+    ranked = ([default] if default in ids else []) + [i for i in ranked if i != default]
+    picks = ranked[:3] or ids[:3] or [default]
+    _AI_MODEL_CACHE[ck] = (time.time(), picks[0], picks)
+    return picks
+
+
+def _claude_generate(prompt, api_key, model, provider=None):
+    """Generate text with the chosen AI provider (name kept for existing call sites)."""
+    return _ai_complete(provider or getattr(api_key, "provider", "claude"), api_key, model, prompt)
+
+
+def _save_ai_settings(db, d):
+    """Store the provider choice and any per-provider key/model that was posted.
+    A blank key keeps the saved one."""
+    if (d.get("ai_provider") or "") in AI_PROVIDERS:
+        set_setting(db, "ai_provider", d["ai_provider"])
+    for p in AI_PROVIDERS:
+        if f"{p}_model" in d:
+            set_setting(db, f"{p}_model", (d.get(f"{p}_model") or "").strip())
+        if (d.get(f"{p}_api_key") or "").strip():
+            set_setting(db, f"{p}_api_key", d[f"{p}_api_key"].strip())
+
+
+def ai_settings_payload(db):
+    cur = ai_provider_of(db)
+    return {"provider": cur, "providers": [
+        {"id": p, "label": m["label"], "model": get_setting(db, f"{p}_model") or "",
+         "default_model": (_AI_MODEL_CACHE.get(p) or (0, m["default"], []))[1],
+         "key_set": bool(get_setting(db, f"{p}_api_key") or os.environ.get(m["env"], "").strip())}
+        for p, m in AI_PROVIDERS.items()]}
 
 
 @app.route("/api/settings/content", methods=["GET", "POST"])
@@ -4858,44 +5216,64 @@ def api_content_settings():
         if not can_view_creds(u):
             return jsonify({"error": "Only the SuperAdmin can change AI credentials."}), 403
         d = request.get_json(force=True)
-        if "claude_model" in d:
-            set_setting(db, "claude_model", (d.get("claude_model") or "").strip())
+        _save_ai_settings(db, d)
         if "content_guidelines" in d:
             set_setting(db, "content_guidelines", (d.get("content_guidelines") or "").strip())
-        if d.get("claude_api_key"):          # only overwrite if a new key is provided
-            set_setting(db, "claude_api_key", d["claude_api_key"].strip())
         return jsonify({"ok": True})
-    has_key = bool(get_setting(db, "claude_api_key") or CLAUDE_API_KEY_ENV)
+    key, model = ai_creds(db)
     return jsonify({
-        "content_provider": "claude",       # generation is always the Claude API now
-        "claude_model": get_setting(db, "claude_model") or DEFAULT_CLAUDE_MODEL,
-        "claude_key_set": has_key,
+        "content_provider": key.provider,
+        "claude_model": model or "automatic",  # (legacy field names: the ACTIVE provider's model/key)
+        "claude_key_set": bool(key),
+        "ai_label": AI_PROVIDERS[key.provider]["label"],
+        "ai": ai_settings_payload(db) if can_view_creds(u) else None,
         "can_view_creds": can_view_creds(u),
     })
 
 
 @app.route("/api/settings/content/test", methods=["POST"])
 def api_content_test():
-    """Validate the Claude API key/model with a tiny request. Credential-holders
+    """Check an AI provider's key/model with a tiny request. Credential-holders
     only. A supplied key is used just for this test (not saved). Never returns the key."""
     u = require_login()
     if not can_view_creds(u):
         return jsonify({"ok": False, "message": "Only the SuperAdmin can test AI credentials."}), 403
     db = get_db()
     d = request.get_json(silent=True) or {}
-    key = (d.get("claude_api_key") or "").strip() or get_setting(db, "claude_api_key") or CLAUDE_API_KEY_ENV
-    model = (d.get("claude_model") or "").strip() or get_setting(db, "claude_model") or DEFAULT_CLAUDE_MODEL
+    provider = d.get("provider") or ai_provider_of(db)
+    if provider not in AI_PROVIDERS:
+        return jsonify({"ok": False, "message": "Unknown AI provider."})
+    saved_key, saved_model = ai_creds(db, provider)
+    key = (d.get("api_key") or d.get("claude_api_key") or "").strip() or saved_key
     if not key:
         return jsonify({"ok": False, "message": "No API key provided."})
+    model = (d.get("model") or d.get("claude_model") or "").strip() or saved_model or _auto_model(provider, key)
     try:
-        txt = _claude_generate("Reply with the single word: OK", key, model)
-        return jsonify({"ok": True, "message": f"API connection OK. Reply: {txt[:40]}"})
-    except urllib.error.HTTPError as e:  # noqa
-        try: detail = e.read().decode()[:400]
-        except Exception: detail = str(e)
-        return jsonify({"ok": False, "message": f"HTTP {e.code}: {detail}"})
+        txt = _ai_complete(provider, key, model, "Reply with the single word: OK", max_tokens=512)
+        return jsonify({"ok": True, "message": f"{AI_PROVIDERS[provider]['label']} works with {model}. Reply: {txt[:40]}"})
     except Exception as e:  # noqa
         return jsonify({"ok": False, "message": str(e)})
+
+
+@app.route("/api/settings/ai/models", methods=["POST"])
+def api_ai_models():
+    """List the models a provider offers (OpenRouter marks its free ones)."""
+    u = require_login()
+    if not can_view_creds(u):
+        return jsonify({"error": "Only the SuperAdmin can manage AI settings."}), 403
+    db = get_db()
+    d = request.get_json(silent=True) or {}
+    p = d.get("provider") or ai_provider_of(db)
+    if p not in AI_PROVIDERS:
+        return jsonify({"error": "Unknown AI provider."}), 400
+    key = (d.get("api_key") or "").strip() or ai_creds(db, p)[0]
+    try:
+        out = _list_ai_models(p, key)
+    except Exception as e:  # noqa
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"models": out[:400]})
+
+
 
 
 @app.route("/api/content")
@@ -5272,18 +5650,17 @@ def api_content_generate():
     if not title:
         return jsonify({"error": "Enter a title."}), 400
     db = get_db()
-    # Generation is powered by the Claude API. The SuperAdmin configures the key.
-    key = get_setting(db, "claude_api_key") or CLAUDE_API_KEY_ENV
+    # Generation uses the AI provider the SuperAdmin chose in Setup.
+    key, model = ai_creds(db)
     if not key:
-        return jsonify({"error": "The AI API key isn't configured yet. Ask your "
-                                 "SuperAdmin to add it in the Connect → Credentials area."}), 400
-    model = get_setting(db, "claude_model") or DEFAULT_CLAUDE_MODEL
+        return jsonify({"error": "The AI isn't set up yet. Ask your SuperAdmin to choose an AI "
+                                 "provider and add its key in Setup → Credentials."}), 400
     guidelines = "\n".join(x for x in (get_setting(db, "content_guidelines") or "",
                                        kit_prompt(kit_for_owner(db, u["id"], _rget(u, "active_brand_id")))) if x)
     job_id = "content_" + secrets.token_hex(4)
     CONTENT_JOBS[job_id] = {"status": "starting", "percent": 0, "message": "Starting…"}
     threading.Thread(target=_run_content_generation,
-                     args=(job_id, title, "claude", key, model, u["username"], u["id"], guidelines),
+                     args=(job_id, title, key.provider, key, model, u["username"], u["id"], guidelines),
                      daemon=True).start()
     return jsonify({"job_id": job_id})
 
@@ -5328,7 +5705,7 @@ def api_calendar_edit(cid):
         db.execute("UPDATE calendar_items SET platform_captions=? WHERE id=?", (json.dumps(pc), cid))
     if "content_type" in d and d["content_type"] in ("reel", "post", "story", "short"):
         db.execute("UPDATE calendar_items SET content_type=? WHERE id=?", (d["content_type"], cid))
-    for k in ("yt_title", "yt_privacy"):
+    for k in ("yt_title", "yt_privacy", "description"):
         if k in d:
             db.execute(f"UPDATE calendar_items SET {k}=? WHERE id=?", ((d.get(k) or "").strip() or None, cid))
     for k in ("link_url", "link_campaign"):
@@ -5680,89 +6057,83 @@ def _vision_model():
 
 
 def _claude_creds():
-    """(key, model) for Claude from app settings or env — safe off-request."""
-    key, model = "", DEFAULT_CLAUDE_MODEL
+    """(key, model) of the chosen AI provider from app settings or env — safe off-request."""
     try:
         db = db_connect()
-        key = get_setting(db, "claude_api_key") or ""
-        model = get_setting(db, "claude_model") or DEFAULT_CLAUDE_MODEL
+        key, model = ai_creds(db)
         db.close()
+        return key, model
+    except Exception:
+        return _ai_key(CLAUDE_API_KEY_ENV, "claude"), DEFAULT_CLAUDE_MODEL
+
+
+VIDEO_MIME = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm",
+              ".mkv": "video/x-matroska", ".avi": "video/x-msvideo", ".3gp": "video/3gpp", ".mpeg": "video/mpeg"}
+GEMINI_INLINE_MAX = 14 * 1024 * 1024      # request limit is 20 MB after base64 (+33%)
+
+
+def ai_analyse_media(frames, guidelines="", video_path=None):
+    """Look at a post's media with the chosen AI provider and write its title,
+    caption, description and hashtags. Gemini gets the whole video (picture and
+    sound) when it's small enough; other providers get frames sampled from it.
+    Returns a dict, or raises RuntimeError with the reason."""
+    key, model = _claude_creds()
+    if not key:
+        raise RuntimeError("No AI provider is set up yet (Setup → Credentials → AI provider).")
+    video = None
+    if key.provider == "gemini" and video_path and os.path.exists(video_path):
+        ext = os.path.splitext(video_path)[1].lower()
+        if ext in VIDEO_MIME and os.path.getsize(video_path) <= GEMINI_INLINE_MAX:
+            with open(video_path, "rb") as fh:
+                video = (fh.read(), VIDEO_MIME[ext])
+    if not (frames or video):
+        raise RuntimeError("Couldn't read pictures from the video. Open it in the Calendar and click the AI "
+                           "button again (your browser reads the frames), or install FFmpeg on the server.")
+    what = ("This is the video itself — use both what you see and what you hear." if video else
+            f"These are {len(frames[:4])} frames sampled in order across ONE video or image post." if len(frames) > 1 else
+            "This is the post's image (or one frame from its video).")
+    guide = ("\nFollow these guidelines from the account owner (they take priority):\n" + guidelines.strip() + "\n"
+             ) if (guidelines or "").strip() else ""
+    prompt = (
+        f"You are an experienced social media manager. {what}\n"
+        "Look carefully at what is actually shown: people, objects, setting, actions, on-screen text and mood. "
+        "Then write content for THIS specific post:\n"
+        '- "title": a short, catchy title, at most 8 words. Never a file name.\n'
+        '- "caption": 1-2 short sentences for Instagram / TikTok: a hook that fits what is shown, '
+        "optionally a call to action. Emojis are fine, sparingly.\n"
+        '- "description": 2-4 plain sentences describing what happens, for YouTube and Facebook. No hashtags.\n'
+        '- "hashtags": 8-12 specific, relevant hashtags (mix niche and popular), space-separated, each starting with #.\n'
+        "Never invent facts you can't see or hear (names, prices, places, dates) unless they are shown or said.\n"
+        + guide +
+        'Return STRICT JSON only: {"title":"...","caption":"...","description":"...","hashtags":"#a #b"}')
+    txt = _ai_complete(key.provider, key, model, prompt, [] if video else frames[:4], 4000, video=video)
+    m = re.search(r"\{.*\}", txt, re.S)
+    try:
+        obj = json.loads(m.group(0) if m else txt)
+    except Exception:
+        raise RuntimeError("The AI's answer wasn't in the expected format. Try again, or choose another model.")
+    out = {k: str(obj.get(k) or "").strip() for k in ("title", "caption", "description", "hashtags")}
+    if isinstance(obj.get("hashtags"), list):
+        out["hashtags"] = " ".join(str(x).strip() for x in obj["hashtags"] if str(x).strip())
+    out["hashtags"] = " ".join(t if t.startswith("#") else "#" + t for t in out["hashtags"].replace(",", " ").split())
+    if not (out["caption"] or out["title"]):
+        raise RuntimeError("The AI returned an empty answer. Try again, or choose another model.")
+    try:                                   # add trending, relevant tags from Google (best-effort)
+        google_tags = _google_trending_hashtags([t for t in (out["title"], out["caption"]) if t])
+        out["hashtags"] = " ".join(_merge_hashtags(out["hashtags"], google_tags, cap=15))
     except Exception:
         pass
-    return (key or CLAUDE_API_KEY_ENV), model
+    out["via"] = AI_PROVIDERS[key.provider]["label"] + (" (whole video)" if video else "")
+    return out
 
 
-def _claude_caption(frames, guidelines=""):
-    """Vision caption via the Claude API. Returns (title, caption, hashtags) or None.
-
-    When the SuperAdmin has configured content-writing guidelines, they are
-    injected into the prompt so the generated caption/hashtags follow them.
+def generate_caption(video_path, original_name, progress=None, kit=None, frames=None):
     """
-    key, model = _claude_creds()
-    if not key or not frames:
-        return None
-    import base64
-    if guidelines is None:
-        guidelines = ""
-    guidelines = (guidelines or "").strip()
-    guide_block = (
-        "\nFollow these content-writing guidelines from the account owner "
-        "(they take priority over the generic style above):\n" + guidelines + "\n"
-    ) if guidelines else ""
-    content = []
-    for f in frames[:3]:
-        content.append({"type": "image", "source": {
-            "type": "base64", "media_type": "image/jpeg",
-            "data": base64.b64encode(f).decode()}})
-    content.append({"type": "text", "text": (
-        "These images are frames sampled across ONE short vertical video. "
-        "You are a viral Instagram Reels creator. Based ONLY on what you actually "
-        "SEE (people, objects, setting, action, on-screen text), write UNIQUE "
-        "content for THIS specific video:\n"
-        "1) title: a SHORT punchy viral hook (max 8 words) — never a file name.\n"
-        "2) caption: ONE short punchy line (max ~12 words) that fits what is shown.\n"
-        "3) hashtags: 5-8 SPECIFIC hashtags (niche + popular), space-separated.\n"
-        + guide_block +
-        'Return STRICT JSON only: {"title":"...","caption":"...","hashtags":"#a #b"}.')})
-    body = json.dumps({"model": model or DEFAULT_CLAUDE_MODEL, "max_tokens": 4000,
-                       "messages": [{"role": "user", "content": content}]}).encode()
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages", data=body,
-        headers={"content-type": "application/json", "x-api-key": key,
-                 "anthropic-version": "2023-06-01"})
-    try:
-        with urllib.request.urlopen(req, timeout=120) as r:
-            resp = json.loads(r.read().decode("utf-8", "replace"))
-        txt = "".join(p.get("text", "") for p in resp.get("content", [])
-                      if p.get("type") == "text").strip()
-        m = re.search(r"\{.*\}", txt, re.S)
-        inner = json.loads(m.group(0) if m else txt)
-        title = (inner.get("title") or "").strip()
-        cap   = (inner.get("caption") or "").strip()
-        tags  = (inner.get("hashtags") or "").strip()
-        if cap or title:
-            # Silently cross-check Google for trending, relevant hashtags and
-            # merge them with the ones the model derived from the video.
-            try:
-                terms = [t for t in [title, cap] if t]
-                google_tags = _google_trending_hashtags(terms)
-                tags = " ".join(_merge_hashtags(tags, google_tags, cap=12))
-            except Exception:
-                pass
-            return (title or "New Reel"), cap, tags
-    except Exception:
-        return None
-    return None
-
-
-def generate_caption(video_path, original_name, progress=None, kit=None):
-    """
-    Return (title, caption, hashtags). Analyses the REAL video content by
-    sampling several frames and sending them to the Claude API (vision), so each
-    video gets a unique, context-aware caption that follows the SuperAdmin's
-    configured content-writing guidelines. Falls back to a per-video varied
-    template (never identical) when no Claude key is configured or ffmpeg can't
-    sample frames.
+    Return (title, caption, hashtags, description, note). The chosen AI provider
+    looks at the REAL media — frames captured by the browser, frames sampled with
+    FFmpeg, or (Gemini) the whole video — and writes content that follows the
+    owner's guidelines and brand kit. When the AI can't be used, a per-video
+    varied template is returned and `note` says why.
     """
     import time, hashlib
     def rep(p, m):
@@ -5770,28 +6141,33 @@ def generate_caption(video_path, original_name, progress=None, kit=None):
             try: progress(int(p), m)
             except Exception: pass
 
-    rep(8, "Sampling frames from the video…")
-    if (video_path or "").lower().endswith(IMG_EXT):
-        try:
-            with open(video_path, "rb") as fh:
-                frames = [fh.read()]
-        except Exception:
-            frames = []
-    else:
-        frames = _extract_frames(video_path, 3)
+    frames = [f for f in (frames or []) if f]
+    if not frames:
+        rep(8, "Sampling frames from the video…")
+        if (video_path or "").lower().endswith(IMG_EXT):
+            try:
+                with open(video_path, "rb") as fh:
+                    frames = [fh.read()]
+            except Exception:
+                frames = []
+        elif video_path and os.path.exists(video_path):
+            frames = _extract_frames(video_path, 4)
     guidelines = "\n".join(x for x in (_content_guidelines_bg(), kit_prompt(kit)) if x)
     brand_tags = (kit or {}).get("default_hashtags") or ""
 
-    # ---- Claude vision (online): analyse the actual frames and write content
-    #      that follows the configured content-writing guidelines. ----------- #
-    if frames:
-        rep(40, "Analysing the video with the API…")
-        res = _claude_caption(frames, guidelines)
-        if res:
-            rep(100, "Title, caption & hashtags ready.")
-            if brand_tags:
-                res = (res[0], res[1], " ".join(_merge_hashtags(brand_tags, res[2], cap=20)))
-            return res
+    note = ""
+    rep(35, "Analysing the video with AI…")
+    try:
+        res = ai_analyse_media(frames, guidelines, video_path)
+        tags = res["hashtags"]
+        if brand_tags:
+            tags = " ".join(_merge_hashtags(brand_tags, tags, cap=20))
+        rep(100, f"Title, caption, description & hashtags ready ({res['via']}).")
+        return (res["title"] or "New post"), res["caption"], tags, res["description"], ""
+    except _Cancelled:
+        raise
+    except Exception as e:  # noqa
+        note = str(e)
 
     # ---- Local fallback — VARIED per video (never identical) -------------- #
     # We can't see the content without a vision model, so we vary the template
@@ -5829,8 +6205,8 @@ def generate_caption(video_path, original_name, progress=None, kit=None):
     hashtags = TAGSETS[((seed >> 32) & 0xFFFF) % len(TAGSETS)]
     if brand_tags:
         hashtags = " ".join(_merge_hashtags(brand_tags, hashtags, cap=20))
-    rep(100, "Caption & hashtags ready.")
-    return title, caption, hashtags
+    rep(100, "Used a basic template — the AI couldn't analyse this video.")
+    return title, caption, hashtags, "", note
 
 
 # =========================================================================== #
@@ -6815,6 +7191,7 @@ def api_oauth_config():
                 v = (d.get(k) or "").strip()
                 if v:
                     set_setting(db, k, v)
+        _save_ai_settings(db, d)
         return jsonify({"ok": True})
     if not allowed:
         return jsonify({"allowed": False, "is_super": is_super(u),
@@ -6831,6 +7208,7 @@ def api_oauth_config():
         "oauth_redirect_base": cfg["redirect_base"],
         "claude_model": get_setting(db, "claude_model") or DEFAULT_CLAUDE_MODEL,
         "claude_key_set": bool(get_setting(db, "claude_api_key")),
+        "ai": ai_settings_payload(db),
         "content_guidelines": get_setting(db, "content_guidelines") or "",
         # kept for older frontends that check is_admin
         "is_admin": True,

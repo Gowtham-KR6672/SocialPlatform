@@ -23,7 +23,9 @@ This repo includes a `Dockerfile` and a `render.yaml` Blueprint.
    - `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` (+ a public bucket named `uploads`), required so uploaded media survives restarts and platforms can fetch it
    - `ENCRYPTION_KEY`, a Fernet key that encrypts OAuth tokens and secrets in the database
      (generate once, never change it)
-   - `CLAUDE_API_KEY` (optional), for AI captions
+   - AI (optional): choose the provider in **Setup → Credentials → AI provider** and paste its key there,
+     or set one of `CLAUDE_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`.
+     Gemini and Groq have free tiers; OpenRouter has free models (ids ending in `:free`).
    - Email alerts and weekly reports (optional): add `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`,
      `SMTP_PASS`, `SMTP_FROM` later, or enter them in the app under Setup → Alerts & reports
 3. After the first deploy, open **Setup** and register each platform's redirect URI

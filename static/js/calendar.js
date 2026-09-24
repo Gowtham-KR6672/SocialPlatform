@@ -432,7 +432,7 @@ function dayItem(it){
   if(!ro){
     actions += btn(`data-editor="${it.id}"`, 'edit', 'Edit post');
     if(it.state==='uploaded'){
-      if(kind!=='text') actions += btn(`data-gen="${it.id}"`, 'sparkles', hasCaption?'Regenerate caption':'Generate caption', 'brand');
+      if(kind!=='text') actions += btn(`data-gen="${it.id}"`, 'sparkles', hasCaption?'Regenerate with AI':'Generate with AI', 'brand');
       actions += btn(`data-review="${it.id}"`, 'send', 'Push to review', 'green');
     }else if(it.state==='submitted'){
       if(App.user && App.user.can_approve) actions += btn(`data-approve="${it.id}"`, 'thumbsUp', 'Approve', '');
@@ -448,7 +448,9 @@ function dayItem(it){
     actions += btn(`data-del="${it.id}"`, 'trash', 'Remove', 'danger');
   }
   const capBlock = hasCaption
-    ? `<div class="cap">${esc(it.caption.length>220?it.caption.slice(0,220)+'…':it.caption)}</div><div class="tags">${esc(it.hashtags||'')}</div>`
+    ? `<div class="cap">${esc(it.caption.length>220?it.caption.slice(0,220)+'…':it.caption)}</div>
+       ${it.description?`<div class="vdesc-sm" title="Description (YouTube, Facebook, LinkedIn, Pinterest)">${esc(it.description)}</div>`:''}
+       <div class="tags">${esc(it.hashtags||'')}</div>`
     : `<div class="cap muted-i">${kind==='text'?'No text yet.':'No caption yet — generate one or write it in the editor.'}</div>`;
   const kindIcon = {video:'film', image:'image', carousel:'layers', text:'file'}[kind] || 'film';
   return `<div class="vcard post ${overdue?'overdue':''}" data-item="${it.id}">
@@ -623,6 +625,8 @@ async function openPostEditor(cid, ds){
         <div class="lib-anchor"><label class="f">Master caption <span class="muted">(used for every platform unless customised below)</span>
           <button class="btn ghost xs" id="pe-tpl" type="button" style="float:right">${ic('folder',12)} Insert template</button></label>
         <textarea class="f" id="pe-cap" style="min-height:90px">${esc(it.caption||'')}</textarea></div>
+        <label class="f" for="pe-desc">Description <span class="muted">(added on YouTube, Facebook, LinkedIn and Pinterest)</span></label>
+        <textarea class="f" id="pe-desc" style="min-height:70px" placeholder="A few sentences about what happens in the video">${esc(it.description||'')}</textarea>
         <div class="lib-anchor"><label class="f">Hashtags
           <button class="btn ghost xs" id="pe-htg" type="button" style="float:right">${ic('folder',12)} Insert hashtags</button></label>
         <input class="f" id="pe-tags" value="${esc(it.hashtags||'')}" placeholder="#reels #brand"></div>
@@ -708,6 +712,7 @@ async function openPostEditor(cid, ds){
     [...$('#pe-caps',m).querySelectorAll('textarea')].forEach(t=>{ pc[t.dataset.p] = t.value; });
     const plats = picker.get();
     const body = {title:$('#pe-title',m).value, caption:$('#pe-cap',m).value, hashtags:$('#pe-tags',m).value,
+      description:$('#pe-desc',m).value,
       platforms:plats, platform_captions:Object.fromEntries(plats.map(p=>[p, pc[p]||''])),
       content_type:$('#pe-type',m).value, yt_title:$('#pe-yttitle',m).value, yt_privacy:$('#pe-ytpriv',m).value,
       recycle_days:Number($('#pe-recycle',m).value||0), auto_publish:$('#pe-auto',m).checked,
@@ -922,7 +927,9 @@ function pollGen(cid, ds, m){
     if(msg) msg.textContent=`${s.percent||0}% — ${s.message||''}`;
     if(['done','error','idle','cancelled'].includes(s.status)){
       clearInterval(poll);
-      if(s.status==='error') toast(s.message,'warn'); else if(s.status==='done') toast('Caption generated','good');
+      if(s.status==='error') toast(s.message,'warn',8000);
+      else if(s.status==='done' && s.warning) toast('AI couldn\u2019t analyse the video: '+s.warning,'warn',12000);
+      else if(s.status==='done') toast('Title, caption, description & hashtags ready','good');
       if($('#dl-list')) { await drawCalendar(); openDay(ds); loadNotifCount(); }
     }
   }, 800);
@@ -930,13 +937,49 @@ function pollGen(cid, ds, m){
 
 /* ---------- Generate caption with live % ---------- */
 async function generateCaption(cid, ds, m){
-  const wrap = $('#gp-'+cid, m);
+  const wrap = $('#gp-'+cid, m), msg = $('#gpm-'+cid, m), fill = $('#gpf-'+cid, m);
   const card = m.querySelector(`[data-item="${cid}"]`);
   if(card) card.querySelectorAll('.actions button').forEach(x=>x.disabled=true);
   if(wrap) wrap.classList.remove('hidden');
-  try{ await api('/api/calendar/'+cid+'/generate',{method:'POST'}); pollGen(cid, ds, m); }
+  const it = findItem(cid);
+  let frames = [];
+  if(it && (it.media_kind||'video')==='video'){
+    if(msg) msg.textContent = 'Reading frames from the video…';
+    if(fill) fill.style.width = '4%';
+    frames = await captureFrames('/uploads/'+encodeURIComponent((it.media&&it.media[0]) || it.filename), 4);
+  }
+  try{ await api('/api/calendar/'+cid+'/generate',{method:'POST', body:{frames}}); pollGen(cid, ds, m); }
   catch(e){ toast(e.message,'warn'); if(card) card.querySelectorAll('.actions button').forEach(x=>x.disabled=false); }
 }
+
+/* Grab JPEG frames spread across a video in the browser (no server FFmpeg needed).
+   Returns [] when the browser can't read the video. */
+function captureFrames(url, n){
+  return new Promise(resolve=>{
+    const v = document.createElement('video'), out = [];
+    let done = false;
+    const finish = ()=>{ if(done) return; done = true; clearTimeout(timer); v.removeAttribute('src'); v.load(); resolve(out); };
+    const timer = setTimeout(finish, 25000);
+    v.muted = true; v.playsInline = true; v.preload = 'auto'; v.crossOrigin = 'anonymous';
+    v.onerror = finish;
+    v.onloadedmetadata = async ()=>{
+      const d = v.duration;
+      if(!isFinite(d) || d <= 0){ finish(); return; }
+      const W = Math.min(768, v.videoWidth || 768), H = Math.round(W * (v.videoHeight || 432) / (v.videoWidth || 768));
+      const c = document.createElement('canvas'); c.width = W; c.height = H;
+      const ctx = c.getContext('2d');
+      for(let i=0; i<n && !done; i++){
+        const t = Math.min(d - 0.05, d * (0.1 + 0.8 * i / Math.max(1, n-1)));
+        await new Promise(r=>{ const h = ()=>{ v.removeEventListener('seeked', h); r(); }; v.addEventListener('seeked', h); v.currentTime = t; setTimeout(h, 6000); });
+        try{ ctx.drawImage(v, 0, 0, W, H); out.push(c.toDataURL('image/jpeg', 0.82)); }
+        catch(e){ break; }             // e.g. a storage server without CORS: fall back to the server
+      }
+      finish();
+    };
+    v.src = url;
+  });
+}
+window.captureFrames = captureFrames;
 
 function prettyDate(ds){ const [y,m,d]=String(ds).split('-').map(Number); if(!y) return ds; return `${DOW[new Date(y,m-1,d).getDay()]}, ${MONTHS[m-1]} ${d}, ${y}`; }
 window.renderCalendar = renderCalendar;

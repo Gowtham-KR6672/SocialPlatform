@@ -70,11 +70,10 @@ async function renderSetup(){
         <div><label class="f">Public Base URL (media)</label>
           <input class="f" id="sc-public" value="${esc(al.public_base_url||'')}" placeholder="https://your-app.com">
           <div class="hint">${d.supabase_storage?'Supabase Storage is on, so media already has public URLs.':'Instagram and Threads download media from here (HTTPS only).'}</div></div>
-        <div><label class="f">AI Key ${cfg.claude_key_set?'(set — blank keeps it)':''}</label>
-          <input class="f" id="sc-aikey" type="password" placeholder="${cfg.claude_key_set?'••••••••':'sk-ant-…'}"></div>
-        <div><label class="f">Model</label>
-          <input class="f" id="sc-model" value="${esc(cfg.claude_model||'')}" placeholder="claude-opus-5"></div>
       </div>
+      <div class="sc-sub">${ic('sparkles',15)} <b>AI provider</b>
+        <span class="muted">Used for captions, content writing, per-platform captions and reply suggestions.</span></div>
+      <div id="sc-ai">${cfg.ai?aiSettingsHTML(cfg.ai):''}</div>
       <button class="btn sm grad-btn" id="sc-savecred">${ic('save',14)} Save credentials</button>
       <div class="err" id="sc-crederr"></div>
       <details class="smtp review-urls"><summary>${ic('shield',14)} URLs for App Review &amp; webhooks (Meta, Google, TikTok…)</summary>
@@ -105,45 +104,36 @@ async function renderSetup(){
         `<option value="${esc(x.id)}" ${x.id===p.board_id?'selected':''}>${esc(x.name||x.id)}</option>`).join('')}</select></label>`;
     return '';
   };
-  const credInputs = (p)=>`
-        <div class="pf-cred">
-          <input class="f" id="pf-id-${p.key}" value="${esc(p.app_id||'')}" placeholder="${esc(p.id_label)}">
-          <input class="f" id="pf-sec-${p.key}" type="password" placeholder="${p.secret_set?'•••••• (set)':esc(p.secret_label)}">
-          <button class="btn ghost sm" data-savecred="${p.key}">${ic('save',14)} Save</button>
-        </div>
-        <div class="pf-redirect" title="Register this exact URL in the ${esc(p.label)} developer console">
-          <span>Redirect URI</span><code>${esc(p.redirect_uri)}</code>
-          <button class="icon-btn sm" data-copy="${esc(p.redirect_uri)}" title="Copy">${ic('copy',14)}</button></div>`;
-  const credBlock = (p)=>{
-    if(p.is_super) return `<div class="pf-scope">${ic('building',12)} Platform app — used by every client</div>` + credInputs(p);
-    if(p.platform_ready && p.source!=='own')
-      return `<details class="pf-own"><summary>Use your own ${esc(p.label)} app instead (optional)</summary>${credInputs(p)}</details>`;
-    if(p.source==='own')
-      return `<div class="pf-scope">${ic('key',12)} Using your own app</div>` + credInputs(p);
-    return `<div class="hint">Not set up yet — ask your administrator to add the ${esc(p.label)} app.</div>
-      <details class="pf-own"><summary>Or add your own ${esc(p.label)} app</summary>${credInputs(p)}</details>`;
+  const hasDetails = p => !!(p.app_id && p.secret_set);
+  const scopeNote = (p)=>{
+    if(p.is_super) return `${ic('building',12)} Platform app — used by every client`;
+    if(p.source==='own') return `${ic('key',12)} Using your own app`;
+    if(p.platform_ready) return `${ic('check',12)} Ready — set up by your administrator`;
+    return `${ic('info',12)} Not set up yet — ask your administrator, or add your own app`;
   };
   const credChip = (p)=>{
     if(p.is_super) return p.installed?`<span class="chip completed">App set</span>`:`<span class="chip gold">App needed</span>`;
-    if(p.installed) return p.connected?'':`<span class="chip completed">${ic('check',12)} Ready — click Connect</span>`;
+    if(p.installed) return '';
     return `<span class="chip gold">Not available yet</span>`;
   };
   const rows = d.platforms.map(p=>`
-    <div class="pf-row glass" data-plat="${p.key}">
-      <div class="pf-left"><span class="pf-ic">${pi(p.key, 26)}</span>
-        <div><b>${esc(p.label)}</b>
-          <div class="sub">${p.connected?esc(p.account||''):'Supports: '+p.supports.join(', ')}</div>
-          ${p.last_error?`<div class="pf-err">${ic('alert',12)} ${esc(p.last_error)}</div>`:''}
-          ${!p.allowed?`<div class="pf-err">${ic('lock',12)} You don't have publishing rights here</div>`:''}</div></div>
-      <div class="pf-right">
-        ${credBlock(p)}
-        <div class="pf-status">${credChip(p)}
-          ${statusChip(p)} ${optionPicker(p)}
-          <button class="btn sm ${p.connected?'ghost':'grad-btn'}" data-conn="${p.key}">${p.connected?'Disconnect':'Connect'}</button>
-          ${p.connected?`<button class="btn ghost sm" data-import="${p.key}" title="Bring in posts you published before, with their comments and stats">${ic('download',14)} Import posts</button>`:''}
-          ${(p.is_super || !p.platform_ready || p.source==='own')?`<button class="btn ghost sm" data-guide="${p.key}">${ic('file',14)} Guide</button>`:''}
-        </div>
-        ${p.connected && p.imported_at?`<div class="hint">Imported past posts · ${esc(fmtTime(String(p.imported_at).slice(0,19)))}</div>`:''}
+    <div class="pf-tile ${p.connected&&p.status!=='expired'?'is-live':''}" data-plat="${p.key}">
+      <div class="pt-top"><span class="pf-ic">${pi(p.key, 26)}</span>
+        <div class="pt-name"><b>${esc(p.label)}</b>
+          <span class="sub">${p.connected?esc(p.account||'Connected'):'Supports: '+esc(p.supports.join(', '))}</span></div>
+        <div class="pt-chips">${statusChip(p)}${credChip(p)}</div></div>
+      <div class="pt-meta">
+        <div class="pt-scope">${scopeNote(p)}</div>
+        ${p.last_error?`<div class="pf-err">${ic('alert',12)} ${esc(p.last_error)}</div>`:''}
+        ${!p.allowed?`<div class="pf-err">${ic('lock',12)} You don't have publishing rights here</div>`:''}
+        ${optionPicker(p)}
+        ${p.connected?`<div class="pt-import"><button class="link-btn" data-import="${p.key}" title="Bring in posts you published before, with their comments and stats">${ic('download',13)} Import past posts</button>
+          ${p.imported_at?`<span class="muted">· last ${esc(fmtTime(String(p.imported_at).slice(0,19)))}</span>`:''}</div>`:''}
+      </div>
+      <div class="pt-actions">
+        <button class="btn ghost sm" data-details="${p.key}">${ic(hasDetails(p)?'edit':'plus',14)} ${hasDetails(p)?'Edit Details':'Add Details'}</button>
+        <button class="btn sm ${p.connected?'ghost':'grad-btn'}" data-conn="${p.key}">${ic(p.connected?'x':'link',14)} ${p.connected?'Disconnect':'Connect'}</button>
+        <button class="btn ghost sm" data-guide="${p.key}">${ic('file',14)} Guide</button>
       </div></div>`).join('');
 
   const alertsCard = `
@@ -183,15 +173,15 @@ async function renderSetup(){
       <div class="hint">Turn this off once your clients are set up. You can still create accounts for them yourself.</div>
     </div>`;
   if(!$('#setupBody')) return;          // user left the page while it was loading
-  $('#setupBody').innerHTML = credCard + `<div class="pf-grid">${rows}</div>` + alertsCard + signupCard;
+  $('#setupBody').innerHTML = credCard + `<div class="pf-tiles">${rows}</div>` + alertsCard + signupCard;
   const sua = $('#su-allow');
   if(sua) sua.onchange = async ()=>{ try{ await api('/api/settings/signup',{method:'POST', body:{allow:sua.checked}});
       toast(sua.checked?'Sign-up is open':'Sign-up is closed','good'); }catch(e){ toast(e.message,'warn'); sua.checked=!sua.checked; } };
 
+  const aiCtl = (cfg.ai && $('#sc-ai')) ? bindAiSettings($('#sc-ai'), cfg.ai) : null;
   const scb = $('#sc-savecred');
   if(scb) scb.onclick = async ()=>{
-    const body = {oauth_redirect_base:$('#sc-redirect').value.trim(), claude_model:$('#sc-model').value.trim()};
-    const k = $('#sc-aikey').value.trim(); if(k) body.claude_api_key = k;
+    const body = Object.assign({oauth_redirect_base:$('#sc-redirect').value.trim()}, aiCtl ? aiCtl.collect() : {});
     try{ await api('/api/oauth/config',{method:'POST', body});
       await api('/api/settings/alerts',{method:'POST', body:{public_base_url:$('#sc-public').value.trim()}});
       toast('Credentials saved','good'); renderSetup(); }
@@ -204,12 +194,8 @@ async function renderSetup(){
   body.querySelectorAll('[data-guide]').forEach(b=>b.onclick=()=>{
     const p = d.platforms.find(x=>x.key===b.dataset.guide); if(p) openPlatformGuide(p);
   });
-  body.querySelectorAll('[data-savecred]').forEach(b=>b.onclick=async ()=>{
-    const k=b.dataset.savecred;
-    const bd={app_id:$('#pf-id-'+k).value.trim()};
-    const s=$('#pf-sec-'+k).value.trim(); if(s) bd.app_secret=s;
-    try{ await api('/api/platforms/'+k+'/creds',{method:'POST', body:bd}); toast(platLabel(k)+' credentials saved','good'); renderSetup(); }
-    catch(e){ toast(e.message,'warn'); }
+  body.querySelectorAll('[data-details]').forEach(b=>b.onclick=()=>{
+    const p = d.platforms.find(x=>x.key===b.dataset.details); if(p) openCredModal(p);
   });
   body.querySelectorAll('[data-opt]').forEach(sel=>sel.onchange=async ()=>{
     const k=sel.dataset.opt, bd = k==='facebook'?{page_id:sel.value}:{board_id:sel.value};
@@ -232,22 +218,10 @@ async function renderSetup(){
       }, 'Disconnect');
       return;
     }
-    // save whatever was typed in this row first, so Connect works without a separate Save click
-    const idEl = $('#pf-id-'+p.key), secEl = $('#pf-sec-'+p.key);
-    const id = idEl.value.trim(), sec = secEl.value.trim();
-    if(p.installed && id===(p.app_id||'') && !sec){ connectLive(p); return; }
-    if(!id || (!sec && !p.secret_set)){
-      const det = idEl.closest('details'); if(det) det.open = true;
-      toast(p.is_super ? `Enter the ${p.label} App ID and Secret first (see Guide)`
-                       : `${p.label} isn't set up yet — ask your administrator, or add your own app`,'warn',5000);
-      $(!id ? '#pf-id-'+p.key : '#pf-sec-'+p.key).focus(); return;
-    }
-    if(id !== (p.app_id||'') || sec){
-      const bd = {app_id:id}; if(sec) bd.app_secret = sec;
-      try{ await api('/api/platforms/'+p.key+'/creds',{method:'POST', body:bd}); }
-      catch(e){ toast(e.message,'warn'); return; }
-    }
-    connectLive(p);
+    if(p.installed){ connectLive(p); return; }
+    toast(p.is_super ? `Add the ${p.label} App ID and Secret first`
+                     : `${p.label} isn't set up yet — ask your administrator, or add your own app`,'warn',5000);
+    openCredModal(p, true);
   });
   $('#al-save').onclick = async ()=>{
     const bd = {alert_webhook:$('#al-hook').value.trim(), alert_email:$('#al-mail').value.trim(),
@@ -264,6 +238,151 @@ async function renderSetup(){
   };
 }
 window.renderSetup = renderSetup;
+
+/* ---------- AI provider picker (Setup card + Content Writing "AI settings") ---------- */
+const AI_META = {
+  claude:     {badge:'Paid',        tone:'paid', note:'Best writing quality. Pay as you go.',
+               keyUrl:'https://console.anthropic.com/settings/keys', ph:'sk-ant-…'},
+  gemini:     {badge:'Free tier',   tone:'free', note:'Free daily limit. Can read video frames for captions.',
+               keyUrl:'https://aistudio.google.com/apikey', ph:'AIza…'},
+  groq:       {badge:'Free tier',   tone:'free', note:'Very fast open models (Llama, GPT-OSS) on a free, rate-limited plan.',
+               keyUrl:'https://console.groq.com/keys', ph:'gsk_…'},
+  openrouter: {badge:'Free models', tone:'free', note:'One key for hundreds of models. Pick one marked free.',
+               keyUrl:'https://openrouter.ai/settings/keys', ph:'sk-or-…'},
+};
+function aiSettingsHTML(ai){
+  return `<div class="ai-set">
+    <div class="ai-provs" role="radiogroup" aria-label="AI provider">${ai.providers.map(p=>{ const M = AI_META[p.id]||{};
+      return `<button type="button" role="radio" class="ai-prov" data-prov="${p.id}" aria-checked="false">
+        <span class="ap-top"><b>${esc(p.label)}</b><span class="ap-badge ${M.tone||''}">${esc(M.badge||'')}</span></span>
+        <span class="ap-note">${esc(M.note||'')}</span>
+        <span class="ap-state">${p.key_set?`${ic('check',12)} Key saved`:'No key yet'}${p.id===ai.provider?' · <b>In use</b>':''}</span></button>`; }).join('')}</div>
+    <div class="ai-fields">
+      <div><label class="f" for="ai-key">API key <span class="muted ai-keystate"></span>
+          <a class="ai-keylink" target="_blank" rel="noopener">Get a key ${ic('external',11)}</a></label>
+        <input class="f" id="ai-key" type="password" autocomplete="new-password"></div>
+      <div><label class="f" for="ai-model">Model</label>
+        <div class="ai-model-row"><input class="f" id="ai-model" list="ai-model-list" autocomplete="off">
+          <button class="btn ghost sm" type="button" data-ai="load">${ic('refresh',13)} Load models</button></div>
+        <datalist id="ai-model-list"></datalist>
+        <div class="hint ai-modelhint"></div>
+        <div class="ai-paidwarn hidden">${ic('alert',13)} <span>This is a paid model — it is charged to your OpenRouter credit. Clear the box to use free models only.</span></div></div>
+    </div>
+    <div class="ai-test-row"><button class="btn ghost sm" type="button" data-ai="test">${ic('zap',13)} Test connection</button>
+      <span class="cs-test ai-testres"></span></div>
+  </div>`;
+}
+/* Wires the picker inside `host`. Keys/models typed for several providers are kept
+   until Save; collect() returns the fields to POST (blank key = keep the saved one). */
+function bindAiSettings(host, ai){
+  const byId = Object.fromEntries(ai.providers.map(p=>[p.id, p]));
+  const draft = {};                     // id -> {key, model}
+  let sel = ai.provider;
+  const keyIn = host.querySelector('#ai-key'), modelIn = host.querySelector('#ai-model');
+  const list = host.querySelector('#ai-model-list'), hint = host.querySelector('.ai-modelhint');
+  const res = host.querySelector('.ai-testres');
+  const keep = ()=>{ draft[sel] = {key:keyIn.value, model:modelIn.value}; };
+  const paidWarn = ()=>{            // OpenRouter: anything not ending in ":free" costs credit
+    const v = modelIn.value.trim();
+    host.querySelector('.ai-paidwarn').classList.toggle('hidden', !(sel==='openrouter' && v && !v.endsWith(':free')));
+  };
+  const show = ()=>{
+    const p = byId[sel], M = AI_META[sel]||{}, dr = draft[sel]||{};
+    host.querySelectorAll('.ai-prov').forEach(b=>{ const on = b.dataset.prov===sel; b.classList.toggle('on', on); b.setAttribute('aria-checked', on); });
+    keyIn.value = dr.key || '';
+    keyIn.placeholder = p.key_set ? '•••••••• saved — leave blank to keep' : (M.ph || 'Paste the API key');
+    host.querySelector('.ai-keystate').textContent = p.key_set ? '(saved)' : '';
+    host.querySelector('.ai-keylink').href = M.keyUrl || '#';
+    modelIn.value = dr.model != null ? dr.model : (p.model || '');
+    modelIn.placeholder = 'Automatic';
+    list.innerHTML = '';
+    hint.textContent = `Leave empty to pick automatically (${p.default_model}). Click “Load models” to see what your key can use.`
+      + (sel==='openrouter' ? ' Free models end in “:free”.' : '');
+    res.className = 'cs-test ai-testres'; res.textContent = '';
+    paidWarn();
+  };
+  host.querySelectorAll('.ai-prov').forEach(b=>b.onclick = ()=>{ keep(); sel = b.dataset.prov; show(); });
+  host.querySelector('[data-ai="load"]').onclick = async (e)=>{
+    const btn = e.currentTarget; btn.disabled = true; hint.textContent = 'Loading models…';
+    try{
+      const r = await api('/api/settings/ai/models',{method:'POST', body:{provider:sel, api_key:keyIn.value.trim()}});
+      list.innerHTML = r.models.map(m=>`<option value="${esc(m.id)}">${esc(m.name)}${m.free?' · free':''}${m.vision?' · reads images':''}</option>`).join('');
+      const free = r.models.filter(m=>m.free).length;
+      hint.textContent = `${r.models.length} models found${free?` (${free} free)`:''}. Click the Model box to pick one.`;
+      modelIn.focus();
+    }catch(err){ hint.textContent = err.message; }
+    btn.disabled = false;
+  };
+  host.querySelector('[data-ai="test"]').onclick = async (e)=>{
+    const btn = e.currentTarget; btn.disabled = true; res.className = 'cs-test ai-testres'; res.textContent = 'Testing…';
+    try{
+      const r = await api('/api/settings/content/test',{method:'POST', body:{provider:sel, api_key:keyIn.value.trim(), model:modelIn.value.trim()}});
+      res.className = 'cs-test ai-testres '+(r.ok?'ok':'bad'); res.innerHTML = ic(r.ok?'check':'x',13)+' '+esc(r.message);
+    }catch(err){ res.className = 'cs-test ai-testres bad'; res.innerHTML = ic('x',13)+' '+esc(err.message); }
+    btn.disabled = false;
+  };
+  modelIn.addEventListener('input', paidWarn);
+  show();
+  return {
+    collect(){
+      keep();
+      const body = {ai_provider: sel};
+      Object.entries(draft).forEach(([id, v])=>{
+        if((v.key||'').trim()) body[id+'_api_key'] = v.key.trim();
+        body[id+'_model'] = (v.model||'').trim();
+      });
+      return body;
+    },
+    selected: ()=>sel, hasKey: ()=> !!(keyIn.value.trim() || byId[sel].key_set),
+  };
+}
+window.aiSettingsHTML = aiSettingsHTML; window.bindAiSettings = bindAiSettings;
+
+/* Add / edit a platform's app details (App ID, Secret) in a popup */
+function openCredModal(p, thenConnect){
+  const has = !!(p.app_id && p.secret_set);
+  const scope = p.is_super
+    ? `${ic('building',13)} Platform app — used by every client`
+    : p.platform_ready && p.source!=='own'
+      ? `${ic('info',13)} Optional: use your own ${esc(p.label)} app. Leave empty to keep using the one your administrator set up.`
+      : `${ic('key',13)} Your own ${esc(p.label)} app`;
+  const m = el(`<div class="modal" style="max-width:520px">
+    <div class="modal-head"><span class="pf-ic sm">${pi(p.key, 20)}</span><h3>${has?'Edit':'Add'} ${esc(p.label)} details</h3>
+      <button class="x" onclick="closeModal()" aria-label="Close">${ic('x',18)}</button></div>
+    <div class="modal-body">
+      <div class="pt-scope big">${scope}</div>
+      <label class="f" for="cm-id">${esc(p.id_label)}</label>
+      <input class="f" id="cm-id" value="${esc(p.app_id||'')}" placeholder="${esc(p.id_label)}" autocomplete="off">
+      <label class="f" for="cm-sec">${esc(p.secret_label)}</label>
+      <input class="f" id="cm-sec" type="password" autocomplete="new-password"
+        placeholder="${p.secret_set?'•••••• saved — leave blank to keep it':esc(p.secret_label)}">
+      <label class="f">Redirect URI</label>
+      <div class="pf-redirect big"><code>${esc(p.redirect_uri)}</code>
+        <button class="icon-btn sm" id="cm-copy" type="button" title="Copy">${ic('copy',14)}</button></div>
+      <div class="hint">Register this exact URL in the ${esc(p.label)} developer console. Click <b>Guide</b> on the tile for the steps.</div>
+      <div class="err" id="cm-err"></div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn ghost" id="cm-save">${ic('save',15)} Save</button>
+      ${p.connected?'':`<button class="btn" id="cm-conn">${ic('link',15)} Save &amp; Connect</button>`}</div></div>`);
+  openModal(m);
+  $('#cm-copy',m).onclick = ()=>{ try{ navigator.clipboard.writeText(p.redirect_uri); toast('Redirect URI copied','good'); }catch(e){ toast(p.redirect_uri); } };
+  const save = async ()=>{
+    $('#cm-err',m).textContent='';
+    const id = $('#cm-id',m).value.trim(), sec = $('#cm-sec',m).value.trim();
+    if(!id){ $('#cm-err',m).textContent = `Enter the ${p.id_label}.`; $('#cm-id',m).focus(); return false; }
+    if(!sec && !p.secret_set){ $('#cm-err',m).textContent = `Enter the ${p.secret_label}.`; $('#cm-sec',m).focus(); return false; }
+    const bd = {app_id:id}; if(sec) bd.app_secret = sec;
+    try{ await api('/api/platforms/'+p.key+'/creds',{method:'POST', body:bd}); return true; }
+    catch(e){ $('#cm-err',m).textContent = e.message; return false; }
+  };
+  $('#cm-save',m).onclick = async ()=>{ if(await save()){ closeModal(); toast(p.label+' details saved','good'); renderSetup(); } };
+  const cb = $('#cm-conn',m);
+  if(cb) cb.onclick = async ()=>{ if(await save()){ closeModal(); connectLive(p); } };
+  m.querySelectorAll('input').forEach(i=>i.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); (thenConnect && cb ? cb : $('#cm-save',m)).click(); } }));
+  setTimeout(()=>$('#cm-id',m) && $('#cm-id',m).focus(), 40);
+}
+window.openCredModal = openCredModal;
 
 async function refreshMe(){ try{ const d=await api('/api/me'); App.user=d.user; }catch(e){} }
 window.refreshMe = refreshMe;
