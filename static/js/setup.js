@@ -110,7 +110,7 @@ async function renderSetup(){
           <button class="icon-btn sm" data-copy="${esc(p.redirect_uri)}" title="Copy">${ic('copy',14)}</button></div>
         <div class="pf-status">${p.installed?`<span class="chip completed">Credentials set</span>`:`<span class="chip gold">Credentials needed</span>`}
           ${statusChip(p)} ${optionPicker(p)}
-          <button class="btn sm ${p.connected?'ghost':'grad-btn'}" data-conn="${p.key}" ${(!p.connected && !p.installed)?'disabled title="Add and save the App ID and Secret first"':''}>${p.connected?'Disconnect':'Connect'}</button>
+          <button class="btn sm ${p.connected?'ghost':'grad-btn'}" data-conn="${p.key}">${p.connected?'Disconnect':'Connect'}</button>
           <button class="btn ghost sm" data-guide="${p.key}">${ic('file',14)} Guide</button>
         </div>
       </div></div>`).join('');
@@ -182,8 +182,18 @@ async function renderSetup(){
       }, 'Disconnect');
       return;
     }
-    if(p.installed) connectLive(p);
-    else { toast(`Add and save your ${p.label} App ID and Secret first`,'warn',5000); const f=$('#pf-id-'+p.key); if(f) f.focus(); }
+    // save whatever was typed in this row first, so Connect works without a separate Save click
+    const id = $('#pf-id-'+p.key).value.trim(), sec = $('#pf-sec-'+p.key).value.trim();
+    if(!id || (!sec && !p.secret_set)){
+      toast(`Enter your ${p.label} App ID and Secret first (see Guide)`,'warn',5000);
+      $(!id ? '#pf-id-'+p.key : '#pf-sec-'+p.key).focus(); return;
+    }
+    if(id !== (p.app_id||'') || sec){
+      const bd = {app_id:id}; if(sec) bd.app_secret = sec;
+      try{ await api('/api/platforms/'+p.key+'/creds',{method:'POST', body:bd}); }
+      catch(e){ toast(e.message,'warn'); return; }
+    }
+    connectLive(p);
   });
   $('#al-save').onclick = async ()=>{
     const bd = {alert_webhook:$('#al-hook').value.trim(), alert_email:$('#al-mail').value.trim(),
