@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Social Platform</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+  <!-- ===== Top bar ===== (brand hidden on the login page via JS) -->
+  <div class="topbar">
+    <div class="logo" id="brand"><span class="mark">SP</span>
+      <span class="logo-txt">Social Platform</span></div>
+    <div class="spacer"></div>
+    <div id="topbar-actions" style="display:flex;align-items:center;gap:10px"></div>
+  </div>
+
+  <!-- read-only banner (shown when viewing without login) -->
+  <div id="readonly-banner" class="readonly-banner hidden">
+    You’re viewing in read-only mode. Log in to edit, upload and schedule.
+  </div>
+
+  <!-- ===== Main view (landing OR dashboard) ===== -->
+  <div id="view"></div>
+
+  <!-- mounts -->
+  <div id="modal-root"></div>
+  <div id="toast-root" class="toast-wrap"></div>
+
+  <script src="/static/js/icons.js"></script>
+  <script src="/static/js/app.js"></script>
+  <script src="/static/js/connect.js"></script>
+  <script src="/static/js/production.js"></script>
+  <script src="/static/js/chat.js"></script>
+  <script src="/static/js/calendar.js"></script>
+  <script src="/static/js/published.js"></script>
+  <script src="/static/js/pages.js"></script>
+  <script src="/static/js/content.js"></script>
+  <script src="/static/js/subusers.js"></script>
+  <script src="/static/js/billing.js"></script>
+  <script src="/static/js/setup.js"></script>
+  <script src="/static/js/onboarding.js"></script>
+</body>
+</html>

@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Content Review</title>
+  <style>
+    :root{--bg:#eef5ff;--card:#fff;--ink:#12315a;--muted:#5a7196;--line:#dbe7f7;--brand:#2f7bff;--green:#12b886;--red:#f0546b}
+    *{box-sizing:border-box}
+    body{margin:0;font-family:"Segoe UI",system-ui,-apple-system,Arial,sans-serif;background:linear-gradient(160deg,#eaf3ff,#dbeafe);color:var(--ink);min-height:100vh}
+    .wrap{max-width:760px;margin:0 auto;padding:32px 16px 48px}
+    .brand{display:flex;align-items:center;gap:10px;font-weight:700;margin-bottom:20px}
+    .mark{width:32px;height:32px;border-radius:9px;background:var(--brand);color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px;box-shadow:0 8px 24px rgba(40,80,160,.10);margin-bottom:16px}
+    h1{font-size:20px;margin:0 0 4px}
+    .muted{color:var(--muted);font-size:13px}
+    .media{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin:14px 0}
+    .media video,.media img{width:100%;border-radius:10px;background:#000;max-height:420px;object-fit:contain}
+    .cap{border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:10px}
+    .cap b{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:6px}
+    .cap p{margin:0;white-space:pre-wrap;font-size:14px;line-height:1.5}
+    label{display:block;font-size:12px;font-weight:600;color:var(--muted);margin:12px 0 4px}
+    input,textarea{width:100%;border:1px solid var(--line);border-radius:9px;padding:10px;font:inherit;color:var(--ink)}
+    textarea{min-height:90px;resize:vertical}
+    .row{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
+    button{border:none;border-radius:9px;padding:11px 18px;font-weight:600;font-size:14px;cursor:pointer;color:#fff}
+    .ok{background:var(--green)} .chg{background:var(--red)}
+    .done{padding:14px;border-radius:10px;background:#e7f8f1;color:#0b8f6a;font-weight:600}
+    .done.chg{background:#fdecef;color:#d23553}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><span class="mark">SP</span> Social Platform · Content review</div>
+  {% if missing %}
+    <div class="card"><h1>Link not found</h1><p class="muted">This review link is invalid or the post was removed.</p></div>
+  {% else %}
+    <div class="card">
+      <h1>{{ item.title or "Untitled post" }}</h1>
+      <div class="muted">Planned for {{ item.date }}{% if item.publish_time %} at {{ item.publish_time }}{% endif %}</div>
+      {% if media %}
+      <div class="media">
+        {% for m in media %}
+          {% if m.image %}<img src="{{ m.url }}" alt="">{% else %}<video src="{{ m.url }}" controls playsinline></video>{% endif %}
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% for c in captions %}
+        <div class="cap"><b>{{ c.label }}</b><p>{{ c.text or "—" }}</p></div>
+      {% endfor %}
+    </div>
+    <div class="card">
+      {% if message %}<p class="muted">{{ message }}</p>{% endif %}
+      {% if link.status == "pending" %}
+        <form method="post">
+          <label for="name">Your name</label>
+          <input id="name" name="name" placeholder="e.g. Priya (Acme Corp)" required>
+          <label for="note">Comments / requested changes (optional for approval)</label>
+          <textarea id="note" name="note" placeholder="What should change?"></textarea>
+          <div class="row">
+            <button class="ok" name="decision" value="approve">Approve</button>
+            <button class="chg" name="decision" value="changes">Request changes</button>
+          </div>
+        </form>
+      {% elif link.status == "approved" %}
+        <div class="done">Approved by {{ link.client_name }}{% if link.client_note %} — “{{ link.client_note }}”{% endif %}</div>
+      {% else %}
+        <div class="done chg">Changes requested by {{ link.client_name }}: “{{ link.client_note }}”</div>
+      {% endif %}
+    </div>
+  {% endif %}
+</div>
+</body>
+</html>

@@ -1,0 +1,32 @@
+# Render Blueprint for SocialPlatform.
+# In Render: New + → Blueprint → point at this repo. It builds the Dockerfile.
+# After the first deploy, fill in the env vars marked sync:false in the
+# Render dashboard (they are secrets and are not stored in git).
+services:
+  - type: web
+    name: socialplatform
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/me
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true          # Render generates a strong random value
+      # Initial passwords for the seeded "Superadmin" and "Admin" logins. Render generates
+      # them; read them in Render → Environment, log in, then change them in My profile.
+      - key: SUPERADMIN_PASSWORD
+        generateValue: true
+      - key: ADMIN_PASSWORD
+        generateValue: true
+      - key: DATABASE_URL            # Supabase Postgres (pooler, port 6543)
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_BUCKET
+        value: uploads
+      - key: CLAUDE_API_KEY
+        sync: false
+      # Email alerts / weekly reports: set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS,
+      # SMTP_FROM here later, or enter them in the app under Setup → Alerts & reports.
