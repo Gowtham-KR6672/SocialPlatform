@@ -791,11 +791,23 @@ def _tiktok_publish(a, media, text, opts):
     size = os.path.getsize(it["path"])
     chunk = size if size < 64 * 1024 * 1024 else 10 * 1024 * 1024
     count = max(1, size // chunk)
-    init = _must(_req(f"{TT_API}/post/publish/video/init/", method="POST", headers=hdr, json_body={
-        "post_info": {"title": text[:2200], "privacy_level": privacy, "disable_comment": False,
-                      "disable_duet": False, "disable_stitch": False},
-        "source_info": {"source": "FILE_UPLOAD", "video_size": size, "chunk_size": chunk,
-                        "total_chunk_count": count}}), "TikTok publish init")
+    def _init(level):
+        return _req(f"{TT_API}/post/publish/video/init/", method="POST", headers=hdr, json_body={
+            "post_info": {"title": text[:2200], "privacy_level": level, "disable_comment": False,
+                          "disable_duet": False, "disable_stitch": False},
+            "source_info": {"source": "FILE_UPLOAD", "video_size": size, "chunk_size": chunk,
+                            "total_chunk_count": count}})
+    r = _init(privacy)
+    if r.status == 403 and privacy != "SELF_ONLY":
+        # unaudited apps (sandbox / before TikTok's audit) may only post private videos
+        privacy = "SELF_ONLY"
+        r = _init(privacy)
+    code = (((r.data or {}).get("error") or {}).get("code", "") if isinstance(r.data, dict) else "")
+    if code == "unaudited_client_can_only_post_to_private_accounts":
+        raise PlatformError("TikTok only lets unaudited apps post to private accounts. In the TikTok app open "
+                            "Profile → ☰ → Settings and privacy → Privacy and turn on Private account, then Retry. "
+                            "After TikTok audits the app you can switch it back.")
+    init = _must(r, "TikTok publish init")
     if (init.get("error") or {}).get("code") not in (None, "ok"):
         raise PlatformError("TikTok: " + init["error"].get("message", "init failed"))
     d = init["data"]
