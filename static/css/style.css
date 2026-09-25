@@ -2219,3 +2219,5 @@ body[data-theme="cosmic"] #topbar-actions{flex-shrink:0}
 .dm-err-msg{color:var(--red-ink);word-break:break-word}
 .dm-err-fix{color:var(--ink-2);background:var(--gold-soft);border-radius:8px;padding:8px 10px;line-height:1.45;display:flex;gap:6px;align-items:flex-start}
 .dm-err-fix .ico{flex-shrink:0;margin-top:2px}
+.dm-err-fix > span{flex:1;min-width:0;overflow-wrap:anywhere}
+.dm-list{overflow-x:hidden}

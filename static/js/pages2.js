@@ -217,15 +217,15 @@ async function renderDMs(host){
       b.disabled = false;
       const help = $('#dmHelp') || host.querySelector('.dm-list');
       const html = r.errors.map(x=>`<div class="dm-err">${pi(x.platform,15)} <b>${esc(platLabel(x.platform))}${x.account?' ('+esc(x.account)+')':''}</b>
-          <div class="dm-err-msg">${esc(x.error)}</div><div class="dm-err-fix">${ic('info',13)} ${esc(x.fix)}</div></div>`).join('');
+          <div class="dm-err-msg">${esc(x.error)}</div><div class="dm-err-fix">${ic('info',13)}<span>${esc(x.fix)}</span></div></div>`).join('');
       if($('#dmHelp')) $('#dmHelp').innerHTML = html; else help.insertAdjacentHTML('beforeend', `<div class="dm-help">${html}</div>`);
       toast(r.new ? `${r.new} new message(s), but some accounts failed — see the details` : 'Messages couldn\u2019t be fetched — see the details','warn',6000);
       if(!r.new) return;
     }else if(!r.new){
       b.disabled = false;
-      if($('#dmHelp')) $('#dmHelp').innerHTML = `<div class="dm-err"><div class="dm-err-fix">${ic('info',13)} The platforms returned no conversations.
-        While your Meta app is in <b>Development mode</b>, only conversations with people who have a role on the app (for example
-        Instagram Testers) are shared. After App Review for messaging and switching the app to <b>Live</b>, all conversations appear.</div></div>`;
+      if($('#dmHelp')) $('#dmHelp').innerHTML = `<div class="dm-err"><div class="dm-err-fix">${ic('info',13)}<span>Instagram and Facebook returned no conversations.
+        While your Meta app is in <b>Development mode</b>, they only share conversations with people who have a role on the app
+        (for example Instagram Testers). After <b>App Review</b> for messaging and switching the app to <b>Live</b>, all conversations appear.</span></div></div>`;
       toast('No new messages','good'); return;
     }
     toast(`${r.new} new message(s)`,'good'); renderDMs(host); };
