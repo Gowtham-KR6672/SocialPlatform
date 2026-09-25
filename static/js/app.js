@@ -251,60 +251,91 @@ function renderLanding(){
   const brand = $('#brand'); if(brand) brand.style.display='none';   // no top-left brand on login
   document.body.classList.add('logged-out');
   const v = $('#view');
+  const brandHTML = (cls)=>`<div class="lp-brand ${cls}">
+      <img src="/static/img/logo.png" alt="" width="512" height="377">
+      <div><div class="lp-name">Social <span>Platform</span></div>
+        <div class="lp-tag">Plan, produce &amp; schedule your social content.</div></div></div>`;
   v.innerHTML = `
-    <div class="auth">
-      <div class="cosmic-floor"></div>
-      <span class="sphere s1"></span><span class="sphere s2"></span><span class="sphere s3"></span>
-      ${COSMIC_GEM_SVG}${COSMIC_CUBE_SVG}${COSMIC_CUBE2_SVG}
-      <div class="auth-inner">
-        <img class="auth-logo" src="/static/img/logo.png" alt="Social Platform logo" width="168" height="124">
-        <h1 class="auth-title"><span class="grad-a">Social</span> <span class="grad-b">Platform</span></h1>
-        <p class="auth-sub">Plan, produce &amp; schedule your social content.</p>
-        <div class="auth-grid solo">
-
-          <div class="auth-card login-card pop" style="--d:.10s">
-            <div class="ac-ico grad">${ic('chevRight',22)}</div>
-            <h3>Login to Start</h3>
-            <p>Sign in to your account to continue.</p>
-
-            <div class="fld"><span class="fld-ic">${ic('user',16)}</span><input class="f" id="lg-user" placeholder="Username" autocomplete="username"></div>
-            <div class="fld"><span class="fld-ic">${ic('lock',16)}</span><input class="f" id="lg-pass" type="password" placeholder="Password" autocomplete="current-password"></div>
-            <div class="err" id="lg-err"></div>
-            <button class="btn full grad-btn" id="lg-go">Log in ${ic('chevRight',16)}</button>
-
-            <div class="auth-links">
-              <a href="#" id="lnkCreate">Create account</a>
-              <span>·</span>
-              <a href="#" id="lnkForgot">Forgot password?</a>
-            </div>
+    <div class="lp">
+      <section class="lp-hero">
+        ${brandHTML('lp-brand-top')}
+        <div class="lp-copy">
+          <div class="lp-eyebrow">Grow your brand</div>
+          <h1 class="lp-h1">All Your<br><span>Digital Marketing</span><br>in One Place</h1>
+          <p class="lp-lead">Plan, create, schedule and analyze your social media content across multiple
+            platforms — faster, smarter and more effectively.</p>
+          <div class="lp-feats">
+            <div class="lp-feat"><span class="lf-ic c1">${ic('calendar',22)}</span><b>Plan</b><small>Organize your content calendar</small></div>
+            <div class="lp-feat"><span class="lf-ic c2">${ic('pen',22)}</span><b>Create</b><small>Design engaging content</small></div>
+            <div class="lp-feat"><span class="lf-ic c3">${ic('send',22)}</span><b>Schedule</b><small>Publish at the right time</small></div>
+            <div class="lp-feat"><span class="lf-ic c4">${ic('bars',22)}</span><b>Analyze</b><small>Track growth and performance</small></div>
           </div>
+        </div>
+      </section>
 
+      <img class="lp-art" src="/static/img/login-art.webp" alt="" width="504" height="472">
+      <section class="lp-card" aria-label="Sign in">
+        <img class="lp-card-logo" src="/static/img/logo.png" alt="Social Platform logo" width="512" height="377">
+        <div class="lp-name">Social <span>Platform</span></div>
+        <div class="lp-tag">Plan, produce &amp; schedule your social content.</div>
+        <h2 class="lp-welcome">Welcome Back</h2>
+        <p class="lp-sub">Sign in to your account to continue</p>
+
+        <div class="lp-fld"><span class="lp-fic">${ic('user',18)}</span>
+          <input id="lg-user" placeholder="Username or Email" autocomplete="username" aria-label="Username or email"></div>
+        <div class="lp-fld"><span class="lp-fic">${ic('lock',18)}</span>
+          <input id="lg-pass" type="password" placeholder="Password" autocomplete="current-password" aria-label="Password">
+          <button type="button" class="lp-eye" id="lg-eye" aria-label="Show password" title="Show password">${ic('eyeOff',18)}</button></div>
+
+        <div class="lp-row">
+          <label class="lp-check"><input type="checkbox" id="lg-remember"> Keep me logged in</label>
+          <a href="#" id="lnkForgot">Forgot password?</a>
         </div>
-        <div class="auth-features">
-          <div class="feat"><span class="feat-ic">${ic('shield',20)}</span><div><b>Secure &amp; Reliable</b><span>Enterprise Grade Security</span></div></div>
-          <div class="feat-sep"></div>
-          <div class="feat"><span class="feat-ic">${ic('zap',20)}</span><div><b>All-in-One Studio</b><span>Plan. Produce. Publish.</span></div></div>
-          <div class="feat-sep"></div>
-          <div class="feat"><span class="feat-ic">${ic('globe',20)}</span><div><b>Cloud Powered</b><span>Access anywhere, anytime</span></div></div>
-        </div>
-      </div>
+        <div class="err" id="lg-err" role="alert"></div>
+        <button class="lp-go" id="lg-go">Log In ${ic('arrowRight',18)}</button>
+      </section>
     </div>`;
 
   // ---- login (single page) ----
   const doLoginSubmit = async ()=>{
     $('#lg-err').textContent='';
+    const b = $('#lg-go'); b.disabled = true;
     try{
-      const d = await api('/api/login', {method:'POST', body:{username:$('#lg-user').value, password:$('#lg-pass').value}});
-      if(d.need_2fa){ open2faPrompt(); return; }
+      const d = await api('/api/login', {method:'POST', body:{username:$('#lg-user').value,
+        password:$('#lg-pass').value, remember:$('#lg-remember').checked}});
+      if(d.need_2fa){ b.disabled = false; open2faPrompt(); return; }
       App.user = d.user; afterLogin();          // no toast/pop-up on login
-    }catch(e){ $('#lg-err').textContent = e.message; }
+    }catch(e){ $('#lg-err').textContent = e.message; b.disabled = false; }
   };
   $('#lg-go').onclick = doLoginSubmit;
   ['lg-user','lg-pass'].forEach(id=>$('#'+id).addEventListener('keydown',e=>{ if(e.key==='Enter'){e.preventDefault();doLoginSubmit();} }));
+  document.querySelectorAll('.lp-fld').forEach(f=>f.addEventListener('mousedown', e=>{   // whole box focuses its input
+    if(e.target.closest('button')) return; const i = f.querySelector('input'); if(e.target!==i){ e.preventDefault(); i.focus(); } }));
+  $('#lg-eye').onclick = ()=>{
+    const p = $('#lg-pass'), show = p.type === 'password';
+    p.type = show ? 'text' : 'password';
+    const e = $('#lg-eye'); e.innerHTML = ic(show ? 'eye' : 'eyeOff', 18);
+    e.setAttribute('aria-label', show ? 'Hide password' : 'Show password'); e.title = e.getAttribute('aria-label');
+  };
 
-  $('#lnkCreate').onclick = (e)=>{ e.preventDefault(); openCreateAccount(); };
-  api('/api/signup-open').then(r=>{ if(r && r.allow===false){ const a=$('#lnkCreate'); if(a){ a.nextElementSibling && a.nextElementSibling.remove(); a.remove(); } } }).catch(()=>{});
   $('#lnkForgot').onclick = (e)=>{ e.preventDefault(); openForgot(); };
+
+  // The illustration is part of the background image (background-size: cover), so where it
+  // lands depends on the window shape. Fit the headline and the card around it; when there
+  // isn't room for all three, switch to the compact layout (illustration faded out).
+  const lp = $('.lp');
+  const fit = ()=>{
+    if(!lp.isConnected){ window.removeEventListener('resize', fit); return; }
+    const W = lp.clientWidth, H = lp.clientHeight, s = Math.max(W/1825, H/862);
+    const off = (W - 1825*s)/2, artL = 612*s + off, artR = 1195*s + off;
+    const cs = getComputedStyle(lp), padL = parseFloat(cs.paddingLeft), padR = parseFloat(cs.paddingRight);
+    const heroW = artL - padL - 8, cardW = W - padR - artR - 12;
+    const compact = W <= 860 || heroW < 400 || cardW < 400;
+    lp.classList.toggle('lp-compact', compact);
+    lp.style.setProperty('--lp-hero-w', compact ? '' : Math.min(heroW, 600) + 'px');
+    lp.style.setProperty('--lp-card-w', compact ? '' : Math.min(cardW, 480) + 'px');
+  };
+  fit(); window.addEventListener('resize', fit);
 
   setTimeout(()=>{ const u=$('#lg-user'); if(u) u.focus(); }, 120);
 }

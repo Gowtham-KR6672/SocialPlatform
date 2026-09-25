@@ -94,6 +94,7 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 # NEVER ship the default secret in production — set SECRET_KEY as an env var.
 app.secret_key = os.environ.get("SECRET_KEY", "va-dashboard-v28-change-me")
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024  # 512 MB uploads
+app.permanent_session_lifetime = timedelta(days=30)   # "Keep me logged in" on the login page
 
 
 # --------------------------------------------------------------------------- #
@@ -1743,6 +1744,10 @@ def api_login():
     db = get_db()
     # Login is case-insensitive on the username (so "admin" == "Admin").
     row = db.execute("SELECT * FROM users WHERE lower(username)=lower(?)", (username,)).fetchone()
+    if not row and "@" in username:                     # sign in with the profile email too
+        hits = db.execute("SELECT * FROM users WHERE lower(email)=lower(?)", (username,)).fetchall()
+        row = hits[0] if len(hits) == 1 else None       # ambiguous emails must use the user ID
+    remember = bool(d.get("remember"))
     if not row or not verify_pw(row["password_hash"], password):
         rate_limited(ukey, 5, 900)
         rate_limited(ikey, 25, 900)
@@ -1755,9 +1760,10 @@ def api_login():
         db.commit()
     if row["totp_enabled"]:
         session.clear()
-        session["pending_2fa"] = {"uid": row["id"], "at": time.time()}
+        session["pending_2fa"] = {"uid": row["id"], "at": time.time(), "remember": remember}
         return jsonify({"need_2fa": True})
     session.clear()
+    session.permanent = remember        # "Keep me logged in": 30-day cookie, else until the browser closes
     session["uid"] = row["id"]
     return jsonify({"user": user_public(dict(row))})
 
@@ -1790,6 +1796,7 @@ def api_login_2fa():
         return jsonify({"error": "That code isn't right. Check your authenticator app and try again."}), 401
     rate_clear(key)
     session.clear()
+    session.permanent = bool(pend.get("remember"))
     session["uid"] = row["id"]
     return jsonify({"user": user_public(dict(row))})
 

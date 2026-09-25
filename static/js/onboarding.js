@@ -7,6 +7,8 @@
 function maybeShowOnboarding(){
   const u = App.user;
   if(!u || u.onboarding_done) return;      // only once, until completed
+  // already has accounts connected → setup is effectively done; don't nag
+  if(Object.values(u.platforms||{}).some(Boolean)){ markOnboardingDone(); return; }
   // small delay so the dashboard paints first, then the Welcome popup appears
   setTimeout(showWelcomePopup, 350);
 }
@@ -31,9 +33,13 @@ function showWelcomePopup(){
         <button class="btn ghost" id="ob-later">Maybe later</button>
         <button class="btn grad-btn" id="ob-start">Start Setup ${ic('chevRight',15)}</button>
       </div>
+      <label class="ob-never"><input type="checkbox" id="ob-never"> Don't show this again</label>
     </div></div>`);
   openModal(m, {closeOnBackdrop:false});
-  $('#ob-later',m).onclick = ()=> closeModal();     // will show again next login (not marked done)
+  $('#ob-later',m).onclick = ()=>{                 // shows again next login unless ticked
+    if($('#ob-never',m).checked) markOnboardingDone();
+    closeModal();
+  };
   $('#ob-start',m).onclick = ()=>{ closeModal(); startSetupWizard(); };
 }
 
@@ -166,9 +172,13 @@ function nextStep(m){
   else finishOnboarding();
 }
 
-async function finishOnboarding(){
-  try{ await api('/api/onboarding/complete',{method:'POST'}); }catch(e){}
+async function markOnboardingDone(){
   if(App.user) App.user.onboarding_done = true;
+  try{ await api('/api/onboarding/complete',{method:'POST'}); }catch(e){}
+}
+
+async function finishOnboarding(){
+  await markOnboardingDone();
   closeModal();
   toast('Setup complete — welcome aboard!','good', 3000);
   renderDashboard();
