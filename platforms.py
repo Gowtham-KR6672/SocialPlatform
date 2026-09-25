@@ -120,7 +120,9 @@ OAUTH = {
                   "scopes": ["threads_basic", "threads_content_publish", "threads_manage_replies",
                              "threads_read_replies", "threads_manage_insights"]},
     "tiktok":    {"auth": "https://www.tiktok.com/v2/auth/authorize/", "sep": ",", "client_param": "client_key",
-                  "scopes": ["user.info.basic", "user.info.stats", "video.publish", "video.upload", "video.list"]},
+                  # video.list needs the Display API product, which TikTok no longer offers to new
+                  # apps; without it per-video stats and "Import past posts" simply come back empty
+                  "scopes": ["user.info.basic", "user.info.stats", "video.publish", "video.upload"]},
     "pinterest": {"auth": "https://www.pinterest.com/oauth/", "sep": ",",
                   "scopes": ["boards:read", "pins:read", "pins:write", "user_accounts:read"]},
 }
