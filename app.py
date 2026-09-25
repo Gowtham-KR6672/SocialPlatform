@@ -3542,14 +3542,15 @@ def _build_media(db, row, platform):
         files = [variants[platform]]
     items = []
     for f in files:
-        path = os.path.join(UPLOAD_DIR, f)
-        if not os.path.exists(path):
-            raise P.PlatformError(f"The media file {f} is missing on the server — replace the video and retry.")
+        path = _local_upload(f)              # re-downloads from Supabase Storage after a redeploy
+        if not path:
+            raise P.PlatformError(f"The media file {f} can't be found on the server or in storage — "
+                                  "replace the video and retry.")
         items.append({"path": path, "url": _public_media_url(db, f), "mime": _guess_content_type(f),
                       "is_video": not _is_image(f)})
     thumb = _rget(row, "thumbnail")
     return {"kind": _media_kind_for(files) if files else "text", "items": items,
-            "thumb_path": os.path.join(UPLOAD_DIR, thumb) if thumb and os.path.exists(os.path.join(UPLOAD_DIR, thumb)) else "",
+            "thumb_path": (_local_upload(thumb) if thumb else ""),
             "thumb_url": _public_media_url(db, thumb) if thumb else ""}
 
 
@@ -4171,7 +4172,7 @@ def format_checks(db, row):
     variants = _jl(_rget(row, "variants"), {})
     info = None
     if kind == "video" and files:
-        info = _probe(os.path.join(UPLOAD_DIR, files[0]))
+        info = _probe(_local_upload(files[0]) or os.path.join(UPLOAD_DIR, files[0]))
     kit = kit_for_owner(db, row["owner_id"], _rget(row, "brand_id")) if row["owner_id"] else None
     for p in _item_platforms(row):
         spec, lab = P.PLATFORMS[p], P.PLATFORMS[p]["label"]
@@ -4232,7 +4233,7 @@ def _convert_video(cid, platform_key, mode, user_id):
         ff = _ffmpeg_bin()
         if not (row and files and ff):
             raise RuntimeError("FFmpeg isn't installed (Setup → Tools)." if not ff else "No video to convert.")
-        src = os.path.join(UPLOAD_DIR, files[0])
+        src = _local_upload(files[0]) or os.path.join(UPLOAD_DIR, files[0])
         pt = row["content_type"] or "reel"
         lim = _video_limit(platform_key, pt)
         out_name = f"{secrets.token_hex(4)}_{platform_key}.mp4"
@@ -8033,7 +8034,7 @@ def api_calendar_thumbnail(cid):
             return jsonify({"error": "Picking a frame needs a video and FFmpeg installed."}), 400
         at = max(0.0, float(d.get("at") or 1))
         fname = f"{secrets.token_hex(4)}_thumb.jpg"
-        subprocess.run([ff, "-y", "-ss", str(at), "-i", os.path.join(UPLOAD_DIR, files[0]), "-frames:v", "1",
+        subprocess.run([ff, "-y", "-ss", str(at), "-i", _local_upload(files[0]) or os.path.join(UPLOAD_DIR, files[0]), "-frames:v", "1",
                         "-q:v", "2", os.path.join(UPLOAD_DIR, fname)], capture_output=True, timeout=60)
         if not os.path.exists(os.path.join(UPLOAD_DIR, fname)):
             return jsonify({"error": "Couldn't grab that frame — try another time."}), 400
@@ -9486,9 +9487,10 @@ def build_monthly_pdf(cur, prev, accts, kit, start, company):
     pdf.rect(0, 0, 210, 34, "F")
     x_text = 12
     logo = (kit or {}).get("logo")
-    if logo and os.path.exists(os.path.join(UPLOAD_DIR, logo)):
+    logo_path = _local_upload(logo) if logo else ""
+    if logo_path:
         try:
-            pdf.image(os.path.join(UPLOAD_DIR, logo), x=12, y=6, h=22)
+            pdf.image(logo_path, x=12, y=6, h=22)
             x_text = 42
         except Exception:
             pass
