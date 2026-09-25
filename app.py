@@ -7332,6 +7332,19 @@ def _legal_ctx():
             "base": base, "updated": "September 2026"}
 
 
+_VERIFY_FILE = re.compile(r"^(tiktok|google|pinterest)[A-Za-z0-9_.-]{0,80}\.(txt|html)$")
+
+
+@app.route("/<fname>")
+def site_verification(fname):
+    """Platform site-ownership files (TikTok URL properties, Google, Pinterest) at the
+    site root. Drop them in static/verify/."""
+    vdir = os.path.join(BASE_DIR, "static", "verify")
+    if not _VERIFY_FILE.match(fname) or not os.path.isfile(os.path.join(vdir, fname)):
+        abort(404)
+    return send_from_directory(vdir, fname)
+
+
 @app.route("/privacy")
 def legal_privacy():
     return render_template("legal.html", page="privacy", **_legal_ctx())
