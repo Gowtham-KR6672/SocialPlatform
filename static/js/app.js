@@ -261,7 +261,7 @@ function renderLanding(){
         ${brandHTML('lp-brand-top')}
         <div class="lp-copy">
           <div class="lp-eyebrow">Grow your brand</div>
-          <h1 class="lp-h1">All Your<br><span>Digital Marketing</span><br>in One Place</h1>
+          <h1 class="lp-h1">All Your<br><span>Social Media Marketing</span><br>in One Place</h1>
           <p class="lp-lead">Plan, create, schedule and analyze your social media content across multiple
             platforms — faster, smarter and more effectively.</p>
           <div class="lp-feats">
@@ -273,7 +273,7 @@ function renderLanding(){
         </div>
       </section>
 
-      <img class="lp-art" src="/static/img/login-art.webp" alt="" width="504" height="472">
+      <div class="lp-scene" aria-hidden="true">${typeof loginScene==='function' ? loginScene() : ''}</div>
       <section class="lp-card" aria-label="Sign in">
         <img class="lp-card-logo" src="/static/img/logo.png" alt="Social Platform logo" width="512" height="377">
         <div class="lp-name">Social <span>Platform</span></div>
@@ -320,22 +320,6 @@ function renderLanding(){
 
   $('#lnkForgot').onclick = (e)=>{ e.preventDefault(); openForgot(); };
 
-  // The illustration is part of the background image (background-size: cover), so where it
-  // lands depends on the window shape. Fit the headline and the card around it; when there
-  // isn't room for all three, switch to the compact layout (illustration faded out).
-  const lp = $('.lp');
-  const fit = ()=>{
-    if(!lp.isConnected){ window.removeEventListener('resize', fit); return; }
-    const W = lp.clientWidth, H = lp.clientHeight, s = Math.max(W/1825, H/862);
-    const off = (W - 1825*s)/2, artL = 612*s + off, artR = 1195*s + off;
-    const cs = getComputedStyle(lp), padL = parseFloat(cs.paddingLeft), padR = parseFloat(cs.paddingRight);
-    const heroW = artL - padL - 8, cardW = W - padR - artR - 12;
-    const compact = W <= 860 || heroW < 400 || cardW < 400;
-    lp.classList.toggle('lp-compact', compact);
-    lp.style.setProperty('--lp-hero-w', compact ? '' : Math.min(heroW, 600) + 'px');
-    lp.style.setProperty('--lp-card-w', compact ? '' : Math.min(cardW, 480) + 'px');
-  };
-  fit(); window.addEventListener('resize', fit);
 
   setTimeout(()=>{ const u=$('#lg-user'); if(u) u.focus(); }, 120);
 }
