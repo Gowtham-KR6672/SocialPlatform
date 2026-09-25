@@ -7994,6 +7994,15 @@ def _platform_status(db, u, key):
     st = a.get("status") or "ok"
     if a.get("mode") == "live" and a.get("expires_at") and float(a["expires_at"]) < time.time():
         st = "expired"
+        # short-lived tokens (YouTube 1h, X 2h) renew with the refresh token — only
+        # report "expired" when that renewal actually fails
+        if a.get("refresh_token") and a.get("id"):
+            try:
+                h = _ensure_fresh(db, _hydrate_account(db, a))
+                if h.get("expires_at") and float(h["expires_at"]) > time.time():
+                    st, a["expires_at"], a["last_error"] = "ok", h["expires_at"], ""
+            except Exception:  # noqa
+                pass
     return {"connected": True, "mode": a.get("mode") or "live", "account": a.get("account_name") or "",
             "status": st, "account_row_id": a.get("id"), "expires_at": a.get("expires_at"),
             "last_error": a.get("last_error") or "",
