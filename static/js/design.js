@@ -106,8 +106,20 @@ function watchPage(){
   const run = ()=>decorateHead(pc);
   new MutationObserver(run).observe(pc, {childList:true});
   run();
+  watchBadges();
 }
 window.watchPage = watchPage;
+
+/* Mark zero counts on the sidebar badges, so the compact icon rail only shows real counts. */
+function watchBadges(){
+  const side = $('#sidepanel'); if(!side) return;
+  const mark = ()=>side.querySelectorAll('.navitem .badge').forEach(b=>{
+    const zero = !(b.textContent||'').trim() || (b.textContent||'').trim()==='0';
+    if(b.classList.contains('is-zero') !== zero) b.classList.toggle('is-zero', zero);
+  });
+  new MutationObserver(mark).observe(side, {subtree:true, childList:true, characterData:true});
+  mark();
+}
 
 /* ---------- stat cards ---------- */
 function smoothPath(pts){
@@ -141,10 +153,11 @@ function statCard(o){
       delta = `<span class="sc-d ${p>=0?'up':'down'}">${ic(p>=0?'arrowUp':'arrowDown',13)} ${Math.abs(p)}%</span>`; }
     delta = `<div class="sc-delta">${delta}<span>vs previous ${o.days} days</span></div>`;
   }
-  return `<div class="stat-card tone-${o.tone}">
+  // .stat-card is a size container: .sc-in rearranges itself to the card's own width
+  return `<div class="stat-card tone-${o.tone}"><div class="sc-in">
     <div class="sc-ico">${o.icon==='check'?`<span class="sc-check">${ic('check',22)}</span>`:ic(o.icon,30)}</div>
     <div class="sc-main"><div class="sc-n">${fmtNum(o.n)}</div><div class="sc-l">${esc(o.label)}</div><div class="sc-s">${esc(o.sub||'')}</div></div>
-    ${delta}${o.series?sparkline(o.series):''}</div>`;
+    ${delta}${o.series?`<div class="sc-sparkwrap">${sparkline(o.series)}</div>`:''}</div></div>`;
 }
 function fmtNum(n){ return (Number(n)||0).toLocaleString(); }
 /* per-day counts of rows whose date field falls in the last `days` days, plus the previous period total */
