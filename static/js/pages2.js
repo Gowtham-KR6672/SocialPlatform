@@ -208,10 +208,27 @@ async function renderDMs(host){
       <div class="row" style="padding:8px;gap:6px"><button class="btn ghost sm" id="dmSync">${ic('refresh',13)} Sync messages</button></div>
       ${d.conversations.map(cv=>`<button class="dm-conv ${cv.unread?'unread':''}" data-acc="${cv.account_id}" data-conv="${esc(cv.conversation_id)}">
         ${pi(cv.platform,16)}<div class="dm-cmain"><b>${esc(cv.name||'Unknown')}</b><span>${cv.last_dir==='out'?'You: ':''}${esc((cv.last_text||'').slice(0,60))}</span></div>
-        ${cv.unread?`<span class="chat-unread">${cv.unread}</span>`:''}</button>`).join('') || '<div class="empty" style="padding:14px">No messages yet. Click Sync.</div>'}</div>
+        ${cv.unread?`<span class="chat-unread">${cv.unread}</span>`:''}</button>`).join('') || `<div class="empty" style="padding:14px">No messages yet. Click Sync.</div>
+        <div class="dm-help" id="dmHelp"></div>`}</div>
     <div class="dm-thread" id="dmThread"><div class="empty-state">${ic('message',28)}<p class="sub">Choose a conversation.</p></div></div></div>`;
   $('#dmSync').onclick = async ()=>{ const b=$('#dmSync'); b.disabled=true;
-    try{ const r = await api('/api/dms/sync',{method:'POST'}); toast(`${r.new} new message(s)`,'good'); renderDMs(host); }catch(e){ toast(e.message,'warn'); b.disabled=false; } };
+    let r; try{ r = await api('/api/dms/sync',{method:'POST'}); }catch(e){ toast(e.message,'warn'); b.disabled=false; return; }
+    if(r.errors && r.errors.length){
+      b.disabled = false;
+      const help = $('#dmHelp') || host.querySelector('.dm-list');
+      const html = r.errors.map(x=>`<div class="dm-err">${pi(x.platform,15)} <b>${esc(platLabel(x.platform))}${x.account?' ('+esc(x.account)+')':''}</b>
+          <div class="dm-err-msg">${esc(x.error)}</div><div class="dm-err-fix">${ic('info',13)} ${esc(x.fix)}</div></div>`).join('');
+      if($('#dmHelp')) $('#dmHelp').innerHTML = html; else help.insertAdjacentHTML('beforeend', `<div class="dm-help">${html}</div>`);
+      toast(r.new ? `${r.new} new message(s), but some accounts failed — see the details` : 'Messages couldn\u2019t be fetched — see the details','warn',6000);
+      if(!r.new) return;
+    }else if(!r.new){
+      b.disabled = false;
+      if($('#dmHelp')) $('#dmHelp').innerHTML = `<div class="dm-err"><div class="dm-err-fix">${ic('info',13)} The platforms returned no conversations.
+        While your Meta app is in <b>Development mode</b>, only conversations with people who have a role on the app (for example
+        Instagram Testers) are shared. After App Review for messaging and switching the app to <b>Live</b>, all conversations appear.</div></div>`;
+      toast('No new messages','good'); return;
+    }
+    toast(`${r.new} new message(s)`,'good'); renderDMs(host); };
   host.querySelectorAll('.dm-conv').forEach(b=>b.onclick=()=>{ host.querySelectorAll('.dm-conv').forEach(x=>x.classList.toggle('on', x===b)); b.classList.remove('unread');
     const cu=b.querySelector('.chat-unread'); if(cu) cu.remove(); openDMThread(b.dataset.acc, b.dataset.conv); });
 }

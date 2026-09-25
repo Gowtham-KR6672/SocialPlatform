@@ -876,6 +876,8 @@ def init_db():
         ("users", "active_brand_id", "INTEGER"),
         ("inbox_comments", "parent_remote_id", "TEXT"),   # reply → id of the comment it answers
         # ---- V32: security ------------------------------------------------------
+        ("users", "company_name", "TEXT"),             # workspace / client name (primary accounts)
+        ("users", "disabled", "INTEGER DEFAULT 0"),    # 1 = workspace suspended by the SuperAdmin
         ("users", "totp_secret", "TEXT"),
         ("users", "totp_pending", "TEXT"),
         ("users", "totp_enabled", "INTEGER DEFAULT 0"),
@@ -959,9 +961,29 @@ def init_db():
     db.commit()
     _encrypt_existing_secrets(db)
     _promote_superadmin_creds(db)
+    _migrate_subuser_tabs(db)
 
     db.commit()
     db.close()
+
+
+def _migrate_subuser_tabs(db):
+    """V36: Sub-Users with a custom section list get the newer sections once, so nobody loses access."""
+    try:
+        if get_setting(db, "v36_tabs_migrated") == "1":
+            return
+        for r in db.execute("SELECT id, access_tabs FROM users WHERE access_tabs IS NOT NULL AND access_tabs<>''").fetchall():
+            try:
+                tabs = json.loads(r["access_tabs"])
+            except Exception:
+                continue
+            if isinstance(tabs, list):
+                tabs += [t for t in V35_NEW_TABS if t not in tabs]
+                db.execute("UPDATE users SET access_tabs=? WHERE id=?", (json.dumps(tabs), r["id"]))
+        set_setting(db, "v36_tabs_migrated", "1")
+        db.commit()
+    except Exception as e:  # noqa
+        print("sub-user tab migration skipped:", e)
 
 
 def _encrypt_existing_secrets(db):
@@ -1085,8 +1107,8 @@ def add_notification(db, message, kind="info", actor="system", link="", recipien
 #  There is no separate "Admin" role — a primary User is the admin of the
 #  Sub-Users it creates. Legacy 'admin' accounts are treated as primary Users.
 # --------------------------------------------------------------------------- #
-ROLE_LABELS = {"superadmin": "SuperAdmin", "admin": "User",
-               "user": "User", "subuser": "Sub-User"}
+ROLE_LABELS = {"superadmin": "SuperAdmin", "admin": "Admin",        # a primary account = its client's admin
+               "user": "Admin", "subuser": "Sub-User"}
 
 
 def role_of(u):
@@ -1247,11 +1269,11 @@ def _content_guidelines_bg():
 #  SuperAdmin always sees every tab (plus the SuperAdmin-only Access & Logins).
 # --------------------------------------------------------------------------- #
 CONTROLLABLE_TABS = [
-    ("input", "Input"), ("calendar", "Calendar"), ("published", "Published"),
-    ("content", "Content Writing"), ("reports", "Reports"),
-    ("notifications", "Notifications"), ("connect", "Connect"),
-    ("users", "List of Users"),
+    ("input", "Input"), ("calendar", "Calendar"), ("queue", "Queue"), ("published", "Published"),
+    ("analytics", "Analytics"), ("inbox", "Inbox"), ("content", "Content Writing"),
+    ("library", "Library"), ("bio", "Link in bio"), ("reports", "Reports"),
 ]
+V35_NEW_TABS = ["queue", "analytics", "inbox", "library", "bio"]   # added to existing section lists once
 ALL_TAB_KEYS = [k for k, _ in CONTROLLABLE_TABS]
 SUPER_ONLY_TABS = ["access", "logins"]
 
@@ -1303,8 +1325,26 @@ def current_user():
     uid = session.get("uid")
     if not uid:
         return None
-    row = get_db().execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
-    return dict(row) if row else None
+    db = get_db()
+    row = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    if not row or _is_suspended(db, row):
+        return None
+    return dict(row)
+
+
+def _is_suspended(db, row):
+    """True when the login's workspace was suspended by the SuperAdmin."""
+    try:
+        if row["role"] == "superadmin":
+            return False
+        if row["disabled"]:
+            return True
+        if row["parent_id"]:
+            p = db.execute("SELECT disabled FROM users WHERE id=?", (row["parent_id"],)).fetchone()
+            return bool(p and p["disabled"])
+    except (KeyError, IndexError):
+        return False
+    return False
 
 
 def require_login():
@@ -1335,6 +1375,31 @@ def ws_owner_id(db, uid):
     if not row:
         return None
     return row["parent_id"] or row["id"]
+
+
+SOCIAL_MODES = ("central", "individual")
+
+
+def ws_social_mode(db, ws_id):
+    """How a workspace connects social accounts: "central" (only the Client Admin
+    connects; every post publishes from the admin's accounts) or "individual"
+    (each user connects their own; a post publishes from its owner's accounts)."""
+    m = (uget_setting(db, ws_id, "social_mode") or "central") if ws_id else "central"
+    return m if m in SOCIAL_MODES else "central"
+
+
+def social_owner_id(db, uid):
+    """Whose social accounts a user works with: the workspace admin's in central mode, else their own."""
+    ws = ws_owner_id(db, uid)
+    return ws if (ws and ws_social_mode(db, ws) == "central") else uid
+
+
+def social_locked(db, u):
+    """A Sub-User in a centrally managed workspace can't connect/disconnect accounts."""
+    return bool(u) and is_subuser(u) and ws_social_mode(db, billing_user_id(u)) == "central"
+
+
+LOCKED_MSG = "Social accounts in this workspace are managed by your admin."
 
 
 def ws_member_ids(db, u):
@@ -1397,6 +1462,7 @@ def user_public(u):
         "username": u["username"],
         "display_name": u["display_name"],
         "email": u["email"],
+        "company_name": _get("company_name") or "",
         "phone": u["phone"],
         "role": role,
         "role_label": role_label(role),
@@ -1680,8 +1746,10 @@ def api_login():
     if not row or not verify_pw(row["password_hash"], password):
         rate_limited(ukey, 5, 900)
         rate_limited(ikey, 25, 900)
-        return jsonify({"error": "Invalid username or password."}), 401
+        return jsonify({"error": "Invalid user ID or password. Sign in with your user ID (not your display name)."}), 401
     rate_clear(ukey)
+    if _is_suspended(db, row):
+        return jsonify({"error": "This workspace is suspended. Please contact your administrator."}), 403
     if pw_needs_upgrade(row["password_hash"]):          # upgrade old SHA-256 hashes
         db.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_pw(password), row["id"]))
         db.commit()
@@ -1918,6 +1986,7 @@ def _subuser_public(r):
         "access_tabs": tabs,                       # None = all controllable tabs
         "can_edit": bool(r.get("can_edit")) if r.get("can_edit") is not None else True,
         "allowed_videos": (vids if vids else "all"),
+        "can_approve": bool(r.get("can_approve")),
     }
 
 
@@ -1943,13 +2012,14 @@ def api_subusers():
         tabs = d.get("access_tabs")
         tabs_json = json.dumps([t for t in (tabs or []) if t in ALL_TAB_KEYS]) if isinstance(tabs, list) else None
         can_edit = 1 if d.get("can_edit", True) else 0
+        can_approve = 1 if d.get("can_approve") else 0
         allowed_videos = d.get("allowed_videos")
         av = "all" if (allowed_videos in (None, "all")) else json.dumps(allowed_videos)
         db.execute(
             "INSERT INTO users (username, display_name, password_hash, role, parent_id, "
-            "access_tabs, can_edit, allowed_videos, created_at) "
-            "VALUES (?,?,?, 'subuser', ?,?,?,?,?)",
-            (username, display, hash_pw(password), u["id"], tabs_json, can_edit, av,
+            "access_tabs, can_edit, can_approve, allowed_videos, created_at) "
+            "VALUES (?,?,?, 'subuser', ?,?,?,?,?,?)",
+            (username, display, hash_pw(password), u["id"], tabs_json, can_edit, can_approve, av,
              datetime.utcnow().isoformat()))
         db.commit()
         add_notification(db, f'Sub-User "{username}" created.', "info", u["username"],
@@ -1991,6 +2061,8 @@ def api_subuser_edit(sid):
         db.execute("UPDATE users SET access_tabs=? WHERE id=?", (tabs_json, sid))
     if "can_edit" in d:
         db.execute("UPDATE users SET can_edit=? WHERE id=?", (1 if d.get("can_edit") else 0, sid))
+    if "can_approve" in d:
+        db.execute("UPDATE users SET can_approve=? WHERE id=?", (1 if d.get("can_approve") else 0, sid))
     if "allowed_videos" in d:
         av = "all" if (d.get("allowed_videos") in (None, "all")) else json.dumps(d.get("allowed_videos"))
         db.execute("UPDATE users SET allowed_videos=? WHERE id=?", (av, sid))
@@ -2004,6 +2076,176 @@ def api_subuser_edit(sid):
     db.commit()
     row = db.execute("SELECT * FROM users WHERE id=?", (sid,)).fetchone()
     return jsonify({"ok": True, "subuser": _subuser_public(row)})
+
+
+# =========================================================================== #
+#  V36 : client workspaces. The SuperAdmin creates a workspace per client with
+#  its Client Admin login; the Client Admin manages users and decides how the
+#  workspace's social accounts are connected (central vs individual).
+# =========================================================================== #
+@app.route("/api/workspace/settings", methods=["GET", "POST"])
+def api_workspace_settings():
+    u = require_login()
+    db = get_db()
+    ws = billing_user_id(u)
+    if request.method == "POST":
+        if not is_primary_user(u):
+            return jsonify({"error": "Only the workspace admin can change this."}), 403
+        d = request.get_json(force=True) or {}
+        if d.get("social_mode") in SOCIAL_MODES:
+            uset_setting(db, ws, "social_mode", d["social_mode"])
+            log_activity(db, u, "social_mode", "workspace", ws, d["social_mode"])
+        if "company_name" in d:
+            db.execute("UPDATE users SET company_name=? WHERE id=?", ((d.get("company_name") or "").strip()[:120], ws))
+            db.commit()
+    row = db.execute("SELECT company_name, username FROM users WHERE id=?", (ws,)).fetchone()
+    return jsonify({"social_mode": ws_social_mode(db, ws), "is_ws_admin": is_primary_user(u),
+                    "company_name": (row["company_name"] if row else "") or "",
+                    "admin_username": row["username"] if row else ""})
+
+
+def _workspace_public(db, r):
+    r = dict(r)
+    members = [x["id"] for x in db.execute("SELECT id FROM users WHERE parent_id=?", (r["id"],)).fetchall()]
+    ids = [r["id"]] + members
+    ph = ",".join("?" * len(ids))
+    accts = db.execute(f"SELECT platform FROM social_accounts WHERE mode='live' AND user_id IN ({ph})", ids).fetchall()
+    posts = db.execute(f"SELECT COUNT(*) FROM calendar_items WHERE owner_id IN ({ph})", ids).fetchone()[0]
+    seen = [x["last_seen"] for x in db.execute(f"SELECT last_seen FROM users WHERE id IN ({ph})", ids).fetchall() if x["last_seen"]]
+    return {"id": r["id"], "company_name": r.get("company_name") or r["username"], "admin_username": r["username"],
+            "admin_name": r.get("display_name") or r["username"], "email": r.get("email") or "",
+            "created_at": r.get("created_at") or "", "last_active": max(seen) if seen else "",
+            "disabled": bool(r.get("disabled")), "users": len(members), "platforms": sorted({a["platform"] for a in accts}),
+            "accounts": len(accts), "posts": posts, "social_mode": ws_social_mode(db, r["id"]),
+            "totp_enabled": bool(r.get("totp_enabled"))}
+
+
+@app.route("/api/workspaces", methods=["GET", "POST"])
+def api_workspaces():
+    u = require_super()
+    db = get_db()
+    if request.method == "POST":
+        d = request.get_json(force=True) or {}
+        company = (d.get("company_name") or "").strip()
+        username = (d.get("username") or "").strip()
+        password = d.get("password") or ""
+        email = (d.get("email") or "").strip()
+        mode = d.get("social_mode") if d.get("social_mode") in SOCIAL_MODES else "central"
+        if not company:
+            return jsonify({"error": "Enter the client / company name."}), 400
+        uerr = _validate_username(username)
+        if uerr:
+            return jsonify({"error": uerr}), 400
+        perr = _validate_password(password)
+        if perr:
+            return jsonify({"error": perr}), 400
+        if db.execute("SELECT 1 FROM users WHERE lower(username)=lower(?)", (username,)).fetchone():
+            return jsonify({"error": "That username is already taken — choose another."}), 409
+        db.execute("INSERT INTO users (username, display_name, email, password_hash, role, company_name, created_at) "
+                   "VALUES (?,?,?,?, 'user', ?,?)",
+                   (username, (d.get("admin_name") or "").strip() or company, email, hash_pw(password), company[:120], _now()))
+        db.commit()
+        row = db.execute("SELECT * FROM users WHERE lower(username)=lower(?)", (username,)).fetchone()
+        uset_setting(db, row["id"], "social_mode", mode)
+        log_activity(db, u, "workspace_created", "workspace", row["id"], company)
+        return jsonify({"ok": True, "workspace": _workspace_public(db, row)})
+    rows = db.execute("SELECT * FROM users WHERE COALESCE(role,'user')<>'superadmin' AND parent_id IS NULL "
+                      "ORDER BY lower(COALESCE(company_name, username))").fetchall()
+    return jsonify({"workspaces": [_workspace_public(db, r) for r in rows]})
+
+
+def _ws_row(db, wid):
+    r = db.execute("SELECT * FROM users WHERE id=? AND parent_id IS NULL AND COALESCE(role,'user')<>'superadmin'",
+                   (wid,)).fetchone()
+    return r
+
+
+@app.route("/api/workspaces/<int:wid>", methods=["PATCH", "DELETE"])
+def api_workspace_edit(wid):
+    u = require_super()
+    db = get_db()
+    r = _ws_row(db, wid)
+    if not r:
+        return jsonify({"error": "Workspace not found."}), 404
+    if request.method == "DELETE":
+        d = request.get_json(silent=True) or {}
+        name = r["company_name"] or r["username"]
+        if (d.get("confirm") or "").strip().lower() != name.strip().lower():
+            return jsonify({"error": f'Type the workspace name "{name}" to confirm.'}), 400
+        _delete_workspace(db, wid)
+        log_activity(db, u, "workspace_deleted", "workspace", wid, name)
+        return jsonify({"ok": True})
+    d = request.get_json(force=True) or {}
+    if "company_name" in d and (d.get("company_name") or "").strip():
+        db.execute("UPDATE users SET company_name=? WHERE id=?", (d["company_name"].strip()[:120], wid))
+    if "email" in d:
+        db.execute("UPDATE users SET email=? WHERE id=?", ((d.get("email") or "").strip(), wid))
+    if "admin_name" in d and (d.get("admin_name") or "").strip():
+        db.execute("UPDATE users SET display_name=? WHERE id=?", (d["admin_name"].strip(), wid))
+    if d.get("social_mode") in SOCIAL_MODES:
+        uset_setting(db, wid, "social_mode", d["social_mode"])
+    if "disabled" in d:
+        db.execute("UPDATE users SET disabled=? WHERE id=?", (1 if d.get("disabled") else 0, wid))
+        log_activity(db, u, "workspace_suspended" if d.get("disabled") else "workspace_activated",
+                     "workspace", wid, r["company_name"] or r["username"])
+    if d.get("password"):
+        perr = _validate_password(d["password"])
+        if perr:
+            return jsonify({"error": perr}), 400
+        db.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_pw(d["password"]), wid))
+    db.commit()
+    return jsonify({"ok": True, "workspace": _workspace_public(db, _ws_row(db, wid))})
+
+
+def _delete_workspace(db, wid):
+    """Remove a client workspace: its logins, social connections and its posts, videos and files."""
+    ids = [wid] + [x["id"] for x in db.execute("SELECT id FROM users WHERE parent_id=?", (wid,)).fetchall()]
+    ph = ",".join("?" * len(ids))
+    names = [x["username"] for x in db.execute(f"SELECT username FROM users WHERE id IN ({ph})", ids).fetchall()]
+    items = [x["id"] for x in db.execute(f"SELECT id FROM calendar_items WHERE owner_id IN ({ph})", ids).fetchall()]
+    vids = [x["id"] for x in db.execute(f"SELECT id FROM videos WHERE owner_id IN ({ph})", ids).fetchall()]
+    accts = [x["id"] for x in db.execute(f"SELECT id FROM social_accounts WHERE user_id IN ({ph})", ids).fetchall()]
+    files = []
+    for x in db.execute(f"SELECT * FROM calendar_items WHERE owner_id IN ({ph})", ids).fetchall():
+        files += _item_files(x) + ([x["thumbnail"]] if _rget(x, "thumbnail") else [])
+    files += [x["filename"] for x in db.execute(f"SELECT filename FROM videos WHERE owner_id IN ({ph})", ids).fetchall()
+              if x["filename"]]
+
+    def run(sql, args):
+        if not args:
+            return
+        try:
+            db.execute(sql.replace("{ph}", ",".join("?" * len(args))), args)
+        except Exception as e:  # noqa - a missing optional table must not stop the delete
+            print("workspace delete:", e)
+
+    for tbl in ("post_targets", "inbox_comments", "ig_comments", "review_links"):
+        run(f"DELETE FROM {tbl} WHERE item_id IN ({{ph}})", items)
+    run("DELETE FROM calendar_items WHERE id IN ({ph})", items)
+    run("DELETE FROM video_comments WHERE video_id IN ({ph})", vids)
+    run("DELETE FROM videos WHERE id IN ({ph})", vids)
+    run("DELETE FROM account_stats WHERE account_id IN ({ph})", accts)
+    run("DELETE FROM dm_messages WHERE account_id IN ({ph})", accts)
+    run("DELETE FROM social_accounts WHERE id IN ({ph})", accts)
+    run("DELETE FROM content_items WHERE owner IN ({ph})", names)
+    for tbl in ("brand_kits", "library_items", "bio_pages", "short_links"):
+        run(f"DELETE FROM {tbl} WHERE workspace_id IN ({{ph}})", [wid])
+    run("DELETE FROM brands WHERE owner_id IN ({ph})", [wid])
+    run("DELETE FROM queue_slots WHERE owner_id IN ({ph})", ids)
+    for tbl in ("notification_reads", "notification_hidden", "conversation_members"):
+        run(f"DELETE FROM {tbl} WHERE user_id IN ({{ph}})", ids)
+    for i in ids:                         # per-user settings are stored as "u<id>_<name>"; "_" must be escaped
+        run("DELETE FROM settings WHERE key LIKE ? ESCAPE '!'", [f"u{i}!_%"])
+    run("DELETE FROM users WHERE id IN ({ph})", ids)
+    db.commit()
+    for f in set(files):                   # local cache copies; Storage copies are left for recovery
+        try:
+            if f and not _file_in_use(db, f, -1):
+                p = os.path.join(UPLOAD_DIR, os.path.basename(f))
+                if os.path.exists(p):
+                    os.remove(p)
+        except Exception:
+            pass
 
 
 # =========================================================================== #
@@ -3469,18 +3711,13 @@ def _legacy_account(db, uid, platform):
 
 
 def _publish_account(db, row, platform):
-    """The account a calendar item publishes from: its owner's (matching brand),
-    else another account connected in the SAME workspace. Never another client's."""
+    """The account a calendar item publishes from, following the workspace's social
+    mode (see ws_social_mode). Never another client's."""
     brand = _rget(row, "brand_id")
     cands = []
     if _rget(row, "owner_id"):
-        cands.append(row["owner_id"])
-        ws = ws_owner_id(db, row["owner_id"])
-        if ws and ws not in cands:
-            cands.append(ws)
-        for r in db.execute("SELECT id FROM users WHERE parent_id=?", (ws,)).fetchall():
-            if r["id"] not in cands:
-                cands.append(r["id"])
+        # central mode: the workspace admin's accounts; individual mode: the post owner's own
+        cands.append(social_owner_id(db, row["owner_id"]))
     for uid in cands:
         a = _account_for_user(db, uid, platform, brand) or _legacy_account(db, uid, platform)
         if a and a.get("mode") == "live" and a.get("token"):
@@ -7749,9 +7986,10 @@ def _guide_url(key):
 
 def _platform_status(db, u, key):
     brand = _rget(u, "active_brand_id")
-    a = _account_for_user(db, u["id"], key, brand) or _legacy_account(db, u["id"], key)
+    owner = social_owner_id(db, u["id"])
+    a = _account_for_user(db, owner, key, brand) or _legacy_account(db, owner, key)
     if not a or a.get("mode") != "live" or not a.get("token"):
-        return {"connected": False, "mode": "", "account": "", "status": ""}
+        return {"connected": False, "mode": "", "account": "", "status": "", "managed_by_admin": owner != u["id"]}
     extra = _jl(a.get("extra"), {})
     st = a.get("status") or "ok"
     if a.get("mode") == "live" and a.get("expires_at") and float(a["expires_at"]) < time.time():
@@ -7762,7 +8000,7 @@ def _platform_status(db, u, key):
             "pages": [{"id": x["id"], "name": x.get("name")} for x in extra.get("pages", [])],
             "page_id": a.get("account_id") if key == "facebook" else "",
             "boards": extra.get("boards", []), "board_id": extra.get("board_id", ""),
-            "imported_at": a.get("imported_at") or ""}
+            "imported_at": a.get("imported_at") or "", "managed_by_admin": owner != u["id"]}
 
 
 @app.route("/api/platforms")
@@ -7791,6 +8029,8 @@ def api_platforms():
             "supports": spec["supports"], "caption_max": spec["caption_max"],
             "allowed": key in _allowed_platforms(u)}))
     return jsonify({"platforms": out, "can_manage_creds": True, "can_view_creds": can_view_creds(u),
+                    "social_mode": ws_social_mode(db, billing_user_id(u)), "social_locked": social_locked(db, u),
+                    "is_ws_admin": is_primary_user(u),
                     "redirect_base": get_setting(db, "oauth_redirect_base") or "",
                     "public_base_url": get_setting(db, "public_base_url") or "",
                     "supabase_storage": USE_SUPABASE_STORAGE})
@@ -7802,6 +8042,8 @@ def api_platform_creds(plat):
     if plat not in CRED_KEYS:
         return jsonify({"error": "Unknown platform."}), 400
     db = get_db()
+    if social_locked(db, u):
+        return jsonify({"error": LOCKED_MSG}), 403
     d = request.get_json(force=True) or {}
     ik, sk = CRED_KEYS[plat]
     if is_super(u):                # platform-wide app: every client connects through it
@@ -7834,6 +8076,8 @@ def api_platform_disconnect(plat):
     if plat not in CRED_KEYS:
         return jsonify({"error": "Unknown platform."}), 400
     db = get_db()
+    if social_locked(db, u):
+        return jsonify({"error": LOCKED_MSG}), 403
     brand = _rget(u, "active_brand_id")
     if brand:
         db.execute("DELETE FROM social_accounts WHERE user_id=? AND platform=? AND brand_id=?", (u["id"], plat, brand))
@@ -7854,6 +8098,8 @@ def api_platform_option(plat):
     """Pick which Facebook Page / Pinterest board a connection posts to."""
     u = require_login()
     db = get_db()
+    if social_locked(db, u):
+        return jsonify({"error": LOCKED_MSG}), 403
     a = _account_for_user(db, u["id"], plat, _rget(u, "active_brand_id"))
     if not a:
         return jsonify({"error": "Connect the account first."}), 400
@@ -7874,6 +8120,8 @@ def api_platform_option(plat):
 
 def _social_connect_start(u, provider):
     db = get_db()
+    if social_locked(db, u):
+        return jsonify({"error": LOCKED_MSG}), 403
     cid, secret, _src = app_creds(db, u["id"], provider)
     if cid and secret:
         state = secrets.token_urlsafe(16)
@@ -8699,8 +8947,11 @@ def _public_base(db):
 
 
 def _ws_accounts(db, u, platform=None):
-    """Live connected accounts in the login's workspace (all for the SuperAdmin)."""
+    """Live connected accounts in the login's workspace (all for the SuperAdmin).
+    In central mode only the workspace admin's accounts count."""
     ids = ws_member_ids(db, u)
+    if ids is not None and ws_social_mode(db, billing_user_id(u)) == "central":
+        ids = [billing_user_id(u)]
     q, args = "SELECT * FROM social_accounts WHERE mode='live'", []
     if ids is not None:
         q += f" AND user_id IN ({','.join('?' * len(ids))})"
@@ -8970,8 +9221,29 @@ def api_dms_sync():
         try:
             new += sync_dms(db, _ensure_fresh(db, a))
         except Exception as e:  # noqa
-            errors.append(str(e))
-    return jsonify({"ok": True, "new": new})
+            errors.append({"platform": a["platform"], "account": a.get("account_name") or "",
+                           "error": str(e)[:300], "fix": _dm_fix(a["platform"], str(e))})
+    return jsonify({"ok": True, "new": new, "errors": errors})
+
+
+def _dm_fix(platform, err):
+    """Plain-language next step for a direct-message sync error."""
+    e = (err or "").lower()
+    if platform == "instagram":
+        if "capability" in e or "(#3)" in e:
+            return ("Your Meta app doesn't have the Instagram messaging permission yet. In Meta Developers → your app → "
+                    "Use cases → Instagram API → Permissions, add instagram_business_manage_messages, then Disconnect "
+                    "and Connect Instagram again in Setup.")
+        if "permission" in e or "scope" in e or "(#10)" in e or "(#200)" in e or "oauth" in e:
+            return ("Instagram didn't grant message access. Disconnect and Connect Instagram again in Setup and allow "
+                    "\"Manage messages\". Also in the Instagram app: Settings → Messages and story replies → "
+                    "Message controls → Connected tools → turn on \"Allow access to messages\".")
+        return ("Check that Instagram is connected with message access, and in the Instagram app turn on "
+                "Settings → Messages and story replies → Message controls → Connected tools → \"Allow access to messages\".")
+    if "capability" in e or "permission" in e or "(#10)" in e or "(#200)" in e:
+        return ("Your Meta app needs the pages_messaging permission. Add it to the app, then Disconnect and Connect "
+                "the Facebook Page again in Setup.")
+    return "Try Disconnect and Connect again in Setup, then Sync."
 
 
 # =========================================================================== #
@@ -9407,6 +9679,8 @@ def api_analytics_accounts_refresh():
 def api_platform_import(plat):
     u = require_login()
     db = get_db()
+    if social_locked(db, u):
+        return jsonify({"error": LOCKED_MSG}), 403
     accts = [a for a in _ws_accounts(db, u, plat) if a["user_id"] == u["id"]] or _ws_accounts(db, u, plat)
     if not accts:
         return jsonify({"error": "Connect this platform first."}), 400

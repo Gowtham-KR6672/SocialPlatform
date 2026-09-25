@@ -16,6 +16,7 @@ const PAGE_META = {
   library:      {eyebrow:'Create',     accent:'teal',    art:'folder',    sub:'Reusable media, caption templates and hashtag groups'},
   bio:          {eyebrow:'Growth',     accent:'indigo',  art:'globe',     sub:'Your link-in-bio page and click-tracked links'},
   reports:      {eyebrow:'Insights',   accent:'violet',  art:'fileText',  sub:'Production and publishing reports'},
+  workspaces:   {eyebrow:'Platform',   accent:'indigo',  art:'building',  sub:'Create and manage a separate workspace for each client'},
   team:         {eyebrow:'Account',    accent:'pink',    art:'users',     sub:'Brands, brand kits, permissions and people'},
   activity:     {eyebrow:'Account',    accent:'amber',   art:'activity',  sub:'Who did what, and when'},
   notifications:{eyebrow:'Account',    accent:'amber',   art:'bell',      sub:'Alerts about posts, comments and connections'},

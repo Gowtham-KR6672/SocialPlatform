@@ -92,17 +92,21 @@ const NAV_TABS = [
   {key:'library',  label:'Library',         ic:'folder',    group:'Workspace'},
   {key:'bio',      label:'Link in bio',     ic:'globe',     group:'Workspace'},
   {key:'reports',  label:'Reports',         ic:'fileText',      group:'Workspace'},
+  {key:'workspaces', label:'Workspaces',    ic:'building',  group:'Account'},
   {key:'team',     label:'Team & Brands',   ic:'users',     group:'Account'},
   {key:'activity', label:'Activity Log',    ic:'activity',  group:'Account'},
   {key:'notifications', label:'Notifications', ic:'bell',  group:'Account', unread:'unread-notifications'},
   {key:'setup',    label:'Setup',           ic:'gear',      group:'Account'},
 ];
 // V31 tabs are open to every logged-in user (data inside is still scoped per role)
-const ALWAYS_TABS = ['setup','queue','analytics','inbox','team','activity','notifications','library','bio'];
+// Everyone has these; a workspace admin has every section; a Sub-User gets the sections
+// their Client Admin ticked (Team & Brands → Sub-Users). Workspaces is SuperAdmin-only.
+const ALWAYS_TABS = ['setup','team','activity','notifications'];
 function tabAllowed(key){
   const u = App.user || {};
-  if(ALWAYS_TABS.includes(key)) return true;
-  if(u.is_super) return true;                                 // SuperAdmin sees all
+  if(key==='workspaces') return !!u.is_super;
+  if(u.is_super || ALWAYS_TABS.includes(key)) return true;
+  if(!u.is_subuser) return true;                              // Client Admin: whole workspace
   return (u.allowed_tabs || []).includes(key);
 }
 window.tabAllowed = tabAllowed;
@@ -490,6 +494,7 @@ function renderDashboard(readonly=false){
   else if(App.page==='activity') renderActivity();
   else if(App.page==='notifications') renderNotifications();
   else if(App.page==='library') renderLibrary();
+  else if(App.page==='workspaces') renderWorkspaces();
   else if(App.page==='bio') renderBio();
   else { App.page='input'; renderProduction(); }
   // reflect subscription state (read-only banner / renewal alert) on every page

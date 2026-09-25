@@ -2174,3 +2174,48 @@ body[data-theme="cosmic"] #topbar-actions{flex-shrink:0}
 #pageContent > .loading,
 #pageContent > :not(.card):not(.col):not(.stat-grid) > .loading:only-child{--ld:clamp(76px,8vw,120px);min-height:max(260px,calc(100vh - 360px))}
 @media (prefers-reduced-motion: reduce){.loading::after{animation:none !important}}
+/* ============================================================
+   Workspaces (SuperAdmin) + connection-mode chooser
+   ============================================================ */
+.ws-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr));gap:18px}
+.ws-card{background:#fff;border:1px solid var(--line);border-radius:18px;padding:18px;display:flex;flex-direction:column;gap:14px;box-shadow:var(--shadow)}
+.ws-card.is-off{background:#fbfbfd;border-style:dashed}
+.ws-card.is-off .ws-av{filter:grayscale(1);opacity:.6}
+.ws-top{display:flex;align-items:center;gap:12px}
+.ws-av{width:46px;height:46px;border-radius:14px;background:var(--grad-2);color:#fff;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.ws-id{flex:1;min-width:0;display:flex;flex-direction:column}
+.ws-id b{font-size:16px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ws-id span{font-size:12.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ws-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;background:var(--surface-2);border-radius:12px;padding:10px}
+.ws-stats div{display:flex;flex-direction:column;align-items:center}
+.ws-stats b{font-size:20px;color:var(--ink)} .ws-stats span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.ws-meta{display:flex;flex-direction:column;gap:6px;font-size:12.5px;color:var(--ink-2)}
+.ws-meta > div{display:flex;align-items:center;gap:6px}
+.ws-plats{display:flex;gap:6px;flex-wrap:wrap}
+.ws-actions{display:flex;gap:8px;flex-wrap:wrap}
+.ws-actions .btn{flex:1 1 auto;justify-content:center}
+.ws-actions .btn.danger{flex:0 0 auto}
+.ws-cred-box{border:1px solid #e3dcfd;background:#fbfaff;border-radius:14px;padding:12px 14px;margin:12px 0 4px}
+.ws-creds{display:flex;flex-direction:column;gap:8px;background:var(--surface-2);border-radius:12px;padding:12px 14px}
+.ws-creds div{display:flex;justify-content:space-between;gap:12px;font-size:13.5px}
+.ws-creds span{color:var(--muted)} .ws-creds b{font-family:ui-monospace,Consolas,monospace;word-break:break-all;text-align:right}
+.mode-pick{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:10px;margin:6px 0}
+.mode-opt{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border:1px solid var(--line);border-radius:14px;cursor:pointer;background:#fff}
+.mode-opt:has(input:checked){border-color:var(--brand);background:var(--brand-soft);box-shadow:0 0 0 1px var(--brand) inset}
+.mode-opt input{margin-top:3px;accent-color:var(--brand)}
+.mode-opt b{display:block;font-size:13.5px;color:var(--ink)}
+.mode-opt small{display:block;font-size:12px;color:var(--muted);line-height:1.4;margin-top:2px}
+.navitem[data-nav="workspaces"] .ic{background:none}
+.ws-actions{flex-wrap:nowrap}
+.ws-actions .btn.sm{padding:8px 9px !important;font-size:12px;min-width:0}
+.ws-actions .btn.danger{padding:8px 10px !important}
+@container (max-width:300px){.ws-actions{flex-wrap:wrap}}
+.su-login{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-2);background:var(--brand-soft);border-radius:9px;padding:6px 8px;margin:8px 0 2px}
+.su-login b{font-family:ui-monospace,Consolas,monospace;color:var(--brand-dark)}
+.su-login .icon-btn{margin-left:auto}
+.dm-help{padding:0 10px 12px;display:flex;flex-direction:column;gap:8px}
+.dm-err{border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:#fff;font-size:12.5px;display:flex;flex-direction:column;gap:6px}
+.dm-err > b{display:inline}
+.dm-err-msg{color:var(--red-ink);word-break:break-word}
+.dm-err-fix{color:var(--ink-2);background:var(--gold-soft);border-radius:8px;padding:8px 10px;line-height:1.45;display:flex;gap:6px;align-items:flex-start}
+.dm-err-fix .ico{flex-shrink:0;margin-top:2px}

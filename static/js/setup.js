@@ -116,6 +116,16 @@ async function renderSetup(){
     if(p.installed) return '';
     return `<span class="chip gold">Not available yet</span>`;
   };
+  const locked = !!d.social_locked;
+  const modeCard = (d.is_ws_admin && !isSuper) ? `
+    <div class="card glass setup-card" id="modeCard">
+      <div class="sc-title">${ic('users',16)} <b>How social accounts are connected in your workspace</b></div>
+      ${modeChooser(d.social_mode)}
+      <div class="row" style="gap:8px;margin-top:10px"><button class="btn sm grad-btn" id="modeSave">${ic('save',14)} Save</button>
+        <span class="hint" id="modeHint"></span></div>
+    </div>` : '';
+  const lockNote = locked ? `<div class="note warn-note">${ic('lock',14)} <div><b>Your admin manages the social accounts for this workspace.</b>
+      Posts you create publish from these accounts. Ask your admin to connect or change an account.</div></div>` : '';
   const rows = d.platforms.map(p=>`
     <div class="pf-tile ${p.connected&&p.status!=='expired'?'is-live':''}" data-plat="${p.key}">
       <div class="pt-top"><span class="pf-ic">${pi(p.key, 26)}</span>
@@ -123,14 +133,15 @@ async function renderSetup(){
           <span class="sub">${p.connected?esc(p.account||'Connected'):'Supports: '+esc(p.supports.join(', '))}</span></div>
         <div class="pt-chips">${statusChip(p)}${credChip(p)}</div></div>
       <div class="pt-meta">
-        <div class="pt-scope">${scopeNote(p)}</div>
+        ${locked?'':`<div class="pt-scope">${scopeNote(p)}</div>`}
         ${p.last_error?`<div class="pf-err">${ic('alert',12)} ${esc(p.last_error)}</div>`:''}
         ${!p.allowed?`<div class="pf-err">${ic('lock',12)} You don't have publishing rights here</div>`:''}
         ${optionPicker(p)}
-        ${p.connected?`<div class="pt-import"><button class="link-btn" data-import="${p.key}" title="Bring in posts you published before, with their comments and stats">${ic('download',13)} Import past posts</button>
+        ${p.managed_by_admin?`<div class="pt-scope">${ic('building',12)} Managed by your admin</div>`:''}
+        ${(p.connected && !locked)?`<div class="pt-import"><button class="link-btn" data-import="${p.key}" title="Bring in posts you published before, with their comments and stats">${ic('download',13)} Import past posts</button>
           ${p.imported_at?`<span class="muted">· last ${esc(fmtTime(String(p.imported_at).slice(0,19)))}</span>`:''}</div>`:''}
       </div>
-      <div class="pt-actions">
+      <div class="pt-actions ${locked?'hidden':''}">
         <button class="btn ghost sm" data-details="${p.key}">${ic(hasDetails(p)?'edit':'plus',14)} ${hasDetails(p)?'Edit Details':'Add Details'}</button>
         <button class="btn sm ${p.connected?'ghost':'grad-btn'}" data-conn="${p.key}">${ic(p.connected?'x':'link',14)} ${p.connected?'Disconnect':'Connect'}</button>
         <button class="btn ghost sm" data-guide="${p.key}">${ic('file',14)} Guide</button>
@@ -173,7 +184,14 @@ async function renderSetup(){
       <div class="hint">Turn this off once your clients are set up. You can still create accounts for them yourself.</div>
     </div>`;
   if(!$('#setupBody')) return;          // user left the page while it was loading
-  $('#setupBody').innerHTML = credCard + `<div class="pf-tiles">${rows}</div>` + alertsCard + signupCard;
+  $('#setupBody').innerHTML = credCard + modeCard + lockNote + `<div class="pf-tiles">${rows}</div>` + alertsCard + signupCard;
+  const ms = $('#modeSave');
+  if(ms) ms.onclick = async ()=>{
+    const mode = (document.querySelector('#modeCard [name=wsmode]:checked')||{}).value;
+    try{ await api('/api/workspace/settings',{method:'POST', body:{social_mode:mode}});
+      toast(mode==='central'?'Only you connect accounts now — all posts publish from them':'Each user now connects their own accounts','good',5000); renderSetup(); }
+    catch(e){ toast(e.message,'warn'); }
+  };
   const sua = $('#su-allow');
   if(sua) sua.onchange = async ()=>{ try{ await api('/api/settings/signup',{method:'POST', body:{allow:sua.checked}});
       toast(sua.checked?'Sign-up is open':'Sign-up is closed','good'); }catch(e){ toast(e.message,'warn'); sua.checked=!sua.checked; } };

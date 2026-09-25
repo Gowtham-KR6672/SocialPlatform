@@ -1279,7 +1279,9 @@ def dm_threads(platform, a, limit=25):
             params = {"platform": "messenger", "fields": "id,updated_time,participants,"
                       "messages.limit(20){id,created_time,from,to,message}", "limit": limit, "access_token": tok}
         r = _req(conv_url + urllib.parse.urlencode(params))
-        convs = (r.data or {}).get("data", []) if r.ok and isinstance(r.data, dict) else []
+        if not r.ok:
+            raise PlatformError(r.err())
+        convs = (r.data or {}).get("data", []) if isinstance(r.data, dict) else []
         for c in convs:
             parts = ((c.get("participants") or {}).get("data") or [])
             other = next((p for p in parts if str(p.get("id")) != own), (parts[0] if parts else {}))
@@ -1292,8 +1294,10 @@ def dm_threads(platform, a, limit=25):
             out.append({"conversation_id": c.get("id"), "participant_id": str(other.get("id") or ""),
                         "participant_name": other.get("username") or other.get("name") or "Unknown",
                         "messages": msgs})
-    except Exception:
-        pass
+    except PlatformError:
+        raise
+    except Exception as e:
+        raise PlatformError(str(e))
     return out
 
 
