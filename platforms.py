@@ -675,8 +675,10 @@ def _li_image(a, it):
     tok, owner = a["token"], a["account_id"]
     init = _must(_req(f"{LI_API}/rest/images?action=initializeUpload", method="POST", headers=_li_hdr(tok),
                       json_body={"initializeUploadRequest": {"owner": owner}}), "LinkedIn image init")["value"]
+    # without a Content-Type the upload host rejects the bytes with an HTML 400 page
     _must(_req(init["uploadUrl"], data=_read(it["path"]), method="PUT", timeout=300,
-               headers={"Authorization": "Bearer " + tok}), "LinkedIn image upload")
+               headers={"Authorization": "Bearer " + tok,
+                        "Content-Type": it.get("mime") or "application/octet-stream"}), "LinkedIn image upload")
     return init["image"]
 
 
@@ -840,7 +842,13 @@ def _pinterest_publish(a, media, text, opts):
     hdr = {"Authorization": "Bearer " + tok}
     board = (a.get("extra") or {}).get("board_id")
     if not board:
-        raise PlatformError("Pick a Pinterest board in Setup first.")
+        # none saved (e.g. the account had no boards when it was connected): use the first board now
+        r = _req(f"{PIN_API}/boards?page_size=25", headers=hdr)
+        items = (r.data or {}).get("items", []) if r.ok and isinstance(r.data, dict) else []
+        board = items[0]["id"] if items else ""
+    if not board:
+        raise PlatformError("Your Pinterest account has no boards. Create a board on pinterest.com, "
+                            "then pick it on the Pinterest tile in Setup and Retry.")
     title = (opts.get("title") or text.split("\n")[0])[:100]
     pin = {"board_id": board, "title": title, "description": text[:500]}
     vids = _videos(media)

@@ -3911,6 +3911,17 @@ def enqueue_publish(db, row, actor_user=None, platforms=None, content_type=None,
         if p not in existing:
             db.execute("INSERT INTO post_targets (item_id, platform, status, attempts, created_at) "
                        "VALUES (?,?, 'new', 0, ?)", (row["id"], p, _now()))
+    # platforms that can't take this kind of media (e.g. YouTube/TikTok with an image) are
+    # marked "skipped" instead of being attempted and shown as failures
+    kind = _item_kind(row)
+    unsupported = [p for p in plats if kind not in P.PLATFORMS[p]["supports"]]
+    for p in unsupported:
+        spec = P.PLATFORMS[p]
+        only = " and ".join(x + "s" for x in spec["supports"] if x in ("video", "image", "carousel", "text"))
+        db.execute("UPDATE post_targets SET status='skipped', error=? WHERE item_id=? AND platform=? "
+                   "AND status IN ('new','failed','skipped')",
+                   (f"{spec['label']} only accepts {only} — skipped for this {kind} post.", row["id"], p))
+    plats = [p for p in plats if p not in unsupported]
     db.commit()
     queued = 0
     actor = actor_name or (actor_user["username"] if actor_user else "scheduler")

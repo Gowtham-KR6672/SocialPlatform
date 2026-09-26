@@ -397,12 +397,12 @@ function targetChips(it){
     let st = 'Not published', cls = 'none', extra = '';
     if(t){
       cls = t.status;
-      st = {new:'Ready', pending:'Queued', publishing:'Publishing…', retrying:'Retrying', published:'Published', failed:'Failed'}[t.status] || t.status;
+      st = {new:'Ready', pending:'Queued', publishing:'Publishing…', retrying:'Retrying', published:'Published', failed:'Failed', skipped:'Skipped'}[t.status] || t.status;
       if(t.status==='published' && t.permalink) extra = `<a href="${esc(t.permalink)}" target="_blank" rel="noopener" title="Open post">${ic('external',12)}</a>`;
       if(t.status==='failed' && !App.readonly) extra = `<button class="tc-retry" data-retry="${t.id}" title="Retry ${esc(platLabel(p))}">${ic('refresh',12)} Retry</button>`;
       if(t.simulated) extra += `<span class="tc-sim" title="Published by an earlier demo version">sim</span>`;
     }
-    const err = t && (t.status==='failed' || t.status==='retrying') && t.error ? ` title="${esc(t.error)}"` : '';
+    const err = t && (t.status==='failed' || t.status==='retrying' || t.status==='skipped') && t.error ? ` title="${esc(t.error)}"` : '';
     return `<span class="tchip tc-${cls}"${err}>${pi(p,14)} ${esc(platLabel(p))} · ${st} ${extra}</span>`;
   }).join('')}</div>`;
 }
