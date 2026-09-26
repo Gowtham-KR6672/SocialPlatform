@@ -273,6 +273,11 @@ def _instagram_exchange(cid, secret, code, redirect, _v):
         "grant_type": "ig_exchange_token", "client_secret": secret, "access_token": token}))
     if lr.ok and isinstance(lr.data, dict) and lr.data.get("access_token"):
         token, expires = lr.data["access_token"], _exp(lr.data.get("expires_in"))
+    else:
+        raise PlatformError("Instagram signed you in, but Meta refused the long-lived (60-day) sign-in "
+                            f"({lr.err()}). Without it the connection stops working within an hour. This "
+                            "usually means Meta is limiting the account — check the Instagram app for a "
+                            "warning or 'confirm it's you' prompt, then click Connect again.")
     me = _req(f"{IG_GRAPH}/me?" + urllib.parse.urlencode({"fields": "user_id,username", "access_token": token}))
     name = ""
     if me.ok and isinstance(me.data, dict):
@@ -347,6 +352,11 @@ def _threads_exchange(cid, secret, code, redirect, _v):
         "grant_type": "th_exchange_token", "client_secret": secret, "access_token": token}))
     if lr.ok and isinstance(lr.data, dict) and lr.data.get("access_token"):
         token, expires = lr.data["access_token"], _exp(lr.data.get("expires_in"))
+    else:
+        raise PlatformError("Threads signed you in, but Meta refused the long-lived (60-day) sign-in "
+                            f"({lr.err()}). Without it the connection stops working within an hour. This "
+                            "usually means Meta is limiting the account — check the Threads app for a "
+                            "warning or 'confirm it's you' prompt, then click Connect again.")
     me = _req(f"{THREADS_GRAPH}/me?" + urllib.parse.urlencode({"fields": "id,username", "access_token": token}))
     name = ""
     if me.ok and isinstance(me.data, dict):
@@ -889,65 +899,81 @@ def _pinterest_publish(a, media, text, opts):
 # --------------------------------------------------------------------------- #
 #  Stats  → {"views", "likes", "comments", "shares"} (missing metrics = 0)
 # --------------------------------------------------------------------------- #
+def _token_dead(r):
+    """True when a platform says the access token itself is no longer valid."""
+    if r.ok:
+        return False
+    e = (r.data or {}).get("error") if isinstance(r.data, dict) else None
+    if isinstance(e, dict) and e.get("code") in (190, 102):          # Meta: expired / invalidated session
+        return True
+    return r.status == 401                                           # Bearer platforms: token rejected
+
+
 def stats(platform, a, rid):
     out = {"views": 0, "likes": 0, "comments": 0, "shares": 0}
     tok = a.get("token")
     if not (tok and rid):
         return out
+    def G(*args, **kw):
+        r = _req(*args, **kw)
+        if _token_dead(r):
+            raise PlatformError(f"{PLATFORMS[platform]['label']} sign-in has expired or was revoked "
+                                f"({r.err()}). Reconnect it in Setup.")
+        return r
     try:
         if platform == "instagram":
-            r = _req(f"{IG_GRAPH}/{rid}?" + urllib.parse.urlencode({"fields": "like_count,comments_count",
+            r = G(f"{IG_GRAPH}/{rid}?" + urllib.parse.urlencode({"fields": "like_count,comments_count",
                                                                      "access_token": tok}))
             if r.ok:
                 out["likes"], out["comments"] = int(r.data.get("like_count", 0)), int(r.data.get("comments_count", 0))
-            ins = _req(f"{IG_GRAPH}/{rid}/insights?" + urllib.parse.urlencode({"metric": "views,shares",
+            ins = G(f"{IG_GRAPH}/{rid}/insights?" + urllib.parse.urlencode({"metric": "views,shares",
                                                                                 "access_token": tok}))
             for m in ((ins.data or {}).get("data", []) if ins.ok else []):
                 v = (m.get("values") or [{}])[0].get("value", 0)
                 if m.get("name") in ("views", "shares"):
                     out[m["name"]] = int(v or 0)
         elif platform == "facebook":
-            r = _req(f"{FB_GRAPH}/{rid}?" + urllib.parse.urlencode({
+            r = G(f"{FB_GRAPH}/{rid}?" + urllib.parse.urlencode({
                 "fields": "reactions.summary(total_count).limit(0),comments.summary(total_count).limit(0),shares",
                 "access_token": tok}))
             if r.ok and isinstance(r.data, dict):
                 out["likes"] = int(((r.data.get("reactions") or {}).get("summary") or {}).get("total_count", 0))
                 out["comments"] = int(((r.data.get("comments") or {}).get("summary") or {}).get("total_count", 0))
                 out["shares"] = int((r.data.get("shares") or {}).get("count", 0))
-            v = _req(f"{FB_GRAPH}/{rid}/video_insights?" + urllib.parse.urlencode({
+            v = G(f"{FB_GRAPH}/{rid}/video_insights?" + urllib.parse.urlencode({
                 "metric": "total_video_views", "access_token": tok}))
             if v.ok and isinstance(v.data, dict) and v.data.get("data"):
                 out["views"] = int(((v.data["data"][0].get("values") or [{}])[0]).get("value", 0) or 0)
         elif platform == "youtube":
-            r = _req(f"{YT_API}/videos?part=statistics&id={rid}", headers={"Authorization": "Bearer " + tok})
+            r = G(f"{YT_API}/videos?part=statistics&id={rid}", headers={"Authorization": "Bearer " + tok})
             items = (r.data or {}).get("items", []) if r.ok else []
             if items:
                 s = items[0]["statistics"]
                 out.update(views=int(s.get("viewCount", 0)), likes=int(s.get("likeCount", 0)),
                            comments=int(s.get("commentCount", 0)))
         elif platform == "twitter":
-            r = _req(f"{X_API}/tweets/{rid}?tweet.fields=public_metrics", headers={"Authorization": "Bearer " + tok})
+            r = G(f"{X_API}/tweets/{rid}?tweet.fields=public_metrics", headers={"Authorization": "Bearer " + tok})
             m = ((r.data or {}).get("data") or {}).get("public_metrics", {}) if r.ok else {}
             out.update(views=int(m.get("impression_count", 0)), likes=int(m.get("like_count", 0)),
                        comments=int(m.get("reply_count", 0)),
                        shares=int(m.get("retweet_count", 0)) + int(m.get("quote_count", 0)))
         elif platform == "linkedin":
-            r = _req(f"{LI_API}/rest/socialMetadata/{urllib.parse.quote(rid, safe='')}", headers=_li_hdr(tok))
+            r = G(f"{LI_API}/rest/socialMetadata/{urllib.parse.quote(rid, safe='')}", headers=_li_hdr(tok))
             if r.ok and isinstance(r.data, dict):
                 out["likes"] = sum(int(v.get("count", 0)) for v in (r.data.get("reactionSummaries") or {}).values())
                 out["comments"] = int((r.data.get("commentSummary") or {}).get("count", 0))
         elif platform == "threads":
-            r = _req(f"{THREADS_GRAPH}/{rid}/insights?" + urllib.parse.urlencode({
-                "metric": "views,likes,replies,reposts,quotes", "access_token": tok}))
+            r = G(f"{THREADS_GRAPH}/{rid}/insights?" + urllib.parse.urlencode({
+                "metric": "views,likes,replies,reposts,quotes,shares", "access_token": tok}))
             for m in ((r.data or {}).get("data", []) if r.ok else []):
                 v = int((m.get("values") or [{}])[0].get("value", 0) or 0)
                 key = {"views": "views", "likes": "likes", "replies": "comments"}.get(m.get("name"))
                 if key:
                     out[key] = v
-                elif m.get("name") in ("reposts", "quotes"):
+                elif m.get("name") in ("reposts", "quotes", "shares"):
                     out["shares"] += v
         elif platform == "tiktok":
-            r = _req(f"{TT_API}/video/query/?fields=id,view_count,like_count,comment_count,share_count",
+            r = G(f"{TT_API}/video/query/?fields=id,view_count,like_count,comment_count,share_count",
                      method="POST", headers={"Authorization": "Bearer " + tok},
                      json_body={"filters": {"video_ids": [rid]}})
             vids = (((r.data or {}).get("data") or {}).get("videos") or []) if r.ok else []
@@ -957,11 +983,13 @@ def stats(platform, a, rid):
                            comments=int(v.get("comment_count", 0)), shares=int(v.get("share_count", 0)))
         elif platform == "pinterest":
             end = datetime.utcnow().date()
-            r = _req(f"{PIN_API}/pins/{rid}/analytics?" + urllib.parse.urlencode({
+            r = G(f"{PIN_API}/pins/{rid}/analytics?" + urllib.parse.urlencode({
                 "start_date": (end - timedelta(days=89)).isoformat(), "end_date": end.isoformat(),
                 "metric_types": "IMPRESSION,SAVE,PIN_CLICK"}), headers={"Authorization": "Bearer " + tok})
             lm = ((r.data or {}).get("all") or {}).get("lifetime_metrics", {}) if r.ok and isinstance(r.data, dict) else {}
             out.update(views=int(lm.get("IMPRESSION", 0)), likes=int(lm.get("SAVE", 0)))
+    except PlatformError:
+        raise
     except Exception:
         pass
     return out

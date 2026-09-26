@@ -4274,6 +4274,23 @@ def _sim_stats(t):
     return {"views": views, "likes": likes, "comments": int(likes * 0.12), "shares": int(likes * 0.06)}
 
 
+def _mark_account_expired(db, acct, err):
+    """The platform rejected the saved sign-in: flag it so Setup shows EXPIRED, alert once a day."""
+    if not acct or not acct.get("id"):
+        return
+    row = db.execute("SELECT status, warned_at FROM social_accounts WHERE id=?", (acct["id"],)).fetchone()
+    db.execute("UPDATE social_accounts SET status='expired', last_error=? WHERE id=?", (err[:500], acct["id"]))
+    db.commit()
+    if row and (row["warned_at"] or "")[:10] != datetime.utcnow().strftime("%Y-%m-%d"):
+        db.execute("UPDATE social_accounts SET warned_at=? WHERE id=?", (_now(), acct["id"]))
+        db.commit()
+        label = P.PLATFORMS.get(acct["platform"], {}).get("label", acct["platform"])
+        send_alert(db, [acct["user_id"]], f"{label} connection expired",
+                   f"🔑 Your {label} connection ({acct.get('account_name') or ''}) has expired, so new stats, "
+                   f"comments and scheduled posts can't reach it. Reconnect it in Setup.",
+                   link="setup:", event="token_expiring", payload={"platform": acct["platform"]})
+
+
 def refresh_target_stats(db, t, pull_comments=True):
     t = dict(t)
     row = db.execute("SELECT * FROM calendar_items WHERE id=?", (t["item_id"],)).fetchone()
@@ -4287,7 +4304,11 @@ def refresh_target_stats(db, t, pull_comments=True):
             acct = _ensure_fresh(db, acct)
         except Exception:
             return None
-        st = P.stats(t["platform"], acct, t["remote_id"])
+        try:
+            st = P.stats(t["platform"], acct, t["remote_id"])
+        except P.PlatformError as e:
+            _mark_account_expired(db, acct, str(e))     # Setup shows EXPIRED; numbers stay as they were
+            return None
         # A refused or failed request comes back as zeros (e.g. while Meta blocks API access).
         # A count dropping from a real number straight to 0 is a failed read, not real data —
         # keep the last known value instead of wiping the post's stats.
@@ -8200,8 +8221,19 @@ def _social_oauth_callback(platform_key):
     label = P.PLATFORMS.get(platform_key, {}).get("label", platform_key.title())
     if request.args.get("error"):
         return _oauth_popup_close(f"{label}: {request.args.get('error_description') or request.args.get('error')}")
+    consumed = bool(state) and not raw and db.execute(
+        "SELECT 1 FROM settings WHERE key=?", (f"oauth_state_{state}",)).fetchone() is not None
+    if consumed:          # the platform loaded this page twice; the first load already finished
+        return _oauth_popup_close(f"This {label} sign-in was already completed. You can close this window "
+                                  "and check the tile in Setup.", ok=True)
     if not code or not st:
         return _oauth_popup_close(f"{label} connection failed (session expired). Please try again.")
+    # claim the state atomically so two simultaneous loads can't both save an account
+    claim = db.execute("UPDATE settings SET value='' WHERE key=? AND value=?", (f"oauth_state_{state}", raw))
+    db.commit()
+    if claim.rowcount != 1:
+        return _oauth_popup_close(f"This {label} sign-in is already being completed. You can close this window "
+                                  "and check the tile in Setup.", ok=True)
     uid = int(st["uid"])
     cid_, sec_, _src = app_creds(db, uid, platform_key)
     try:
