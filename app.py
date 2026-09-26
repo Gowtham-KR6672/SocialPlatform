@@ -4288,6 +4288,16 @@ def refresh_target_stats(db, t, pull_comments=True):
         except Exception:
             return None
         st = P.stats(t["platform"], acct, t["remote_id"])
+        # A refused or failed request comes back as zeros (e.g. while Meta blocks API access).
+        # A count dropping from a real number straight to 0 is a failed read, not real data —
+        # keep the last known value instead of wiping the post's stats.
+        # (history also repairs posts that were already zeroed by an earlier failed read)
+        hist = db.execute("SELECT MAX(views) views, MAX(likes) likes, MAX(comments) comments, MAX(shares) shares "
+                          "FROM stats_history WHERE target_id=?", (t["id"],)).fetchone()
+        for k in ("views", "likes", "comments", "shares"):
+            last = max(t.get(k) or 0, (hist[k] if hist else 0) or 0)
+            if not st.get(k) and last > 0:
+                st[k] = last
         if pull_comments:
             _ingest_comments(db, t, row, P.comments(t["platform"], acct, t["remote_id"]))
     prev = db.execute("SELECT * FROM stats_history WHERE target_id=? ORDER BY id DESC LIMIT 1", (t["id"],)).fetchone()
@@ -9095,6 +9105,14 @@ def _bg_import_and_snapshot(account_row_id):
 # =========================================================================== #
 def snapshot_account(db, acct):
     st = P.account_stats(acct["platform"], acct)
+    # followers / post count never really fall to 0 overnight — a 0 after real numbers is a
+    # refused request, so carry the last snapshot forward (daily reach can genuinely be 0)
+    prev = db.execute("SELECT followers, media_count FROM account_stats WHERE account_id=? "
+                      "ORDER BY day DESC LIMIT 1", (acct["id"],)).fetchone()
+    if prev:
+        for k in ("followers", "media_count"):
+            if not st.get(k) and (prev[k] or 0) > 0:
+                st[k] = prev[k]
     day = datetime.utcnow().strftime("%Y-%m-%d")
     ex = db.execute("SELECT id FROM account_stats WHERE account_id=? AND day=?", (acct["id"], day)).fetchone()
     vals = (st["followers"], st["reach"], st["impressions"], st["profile_views"], st["media_count"], _now())
