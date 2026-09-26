@@ -904,6 +904,8 @@ def _token_dead(r):
     if r.ok:
         return False
     e = (r.data or {}).get("error") if isinstance(r.data, dict) else None
+    if isinstance(e, dict) and "scope" in (str(e.get("code", "")) + str(e.get("message", ""))).lower():
+        return False            # a missing permission for one call (e.g. TikTok video.list) isn't a dead sign-in
     if isinstance(e, dict) and e.get("code") in (190, 102):          # Meta: expired / invalidated session
         return True
     return r.status == 401                                           # Bearer platforms: token rejected
@@ -972,7 +974,7 @@ def stats(platform, a, rid):
                     out[key] = v
                 elif m.get("name") in ("reposts", "quotes", "shares"):
                     out["shares"] += v
-        elif platform == "tiktok":
+        elif platform == "tiktok" and False:   # per-video stats need video.list, which TikTok no longer grants
             r = G(f"{TT_API}/video/query/?fields=id,view_count,like_count,comment_count,share_count",
                      method="POST", headers={"Authorization": "Bearer " + tok},
                      json_body={"filters": {"video_ids": [rid]}})

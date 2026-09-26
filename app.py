@@ -963,6 +963,10 @@ def init_db():
     _encrypt_existing_secrets(db)
     _promote_superadmin_creds(db)
     _migrate_subuser_tabs(db)
+    # V37: undo a false 'expired' flag on TikTok (a missing video.list permission was read as a dead sign-in)
+    db.execute("UPDATE social_accounts SET status='ok', last_error='' WHERE platform='tiktok' "
+               "AND status='expired' AND last_error LIKE ?", ("%did not authorize the scope%",))
+    db.commit()
 
     db.commit()
     db.close()
