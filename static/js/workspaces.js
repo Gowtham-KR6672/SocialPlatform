@@ -39,6 +39,7 @@ async function renderWorkspaces(){
         <div><b>${w.posts}</b><span>Posts</span></div></div>
       <div class="ws-meta">
         <div>${ic('link',13)} ${esc(SOCIAL_MODE_LABEL[w.social_mode]||w.social_mode)}</div>
+        ${w.loans_enabled?`<div>${ic('card',13)} Loan reminders on</div>`:''}
         <div class="ws-plats">${w.platforms.length?w.platforms.map(p=>pi(p,16)).join(''):'<span class="muted">No accounts connected yet</span>'}</div>
         <div class="muted">${ic('clock',12)} Last active ${esc(when(w.last_active))} · created ${esc((w.created_at||'').slice(0,10))}</div></div>
       <div class="ws-actions">
@@ -102,6 +103,9 @@ function openWorkspaceModal(w){
       <label class="f">Social media accounts</label>
       ${modeChooser(editing?w.social_mode:'central')}
       <div class="hint">The Client Admin can change this later in Setup.</div>
+      <label class="f">Extra features</label>
+      <label class="cred-toggle"><input type="checkbox" id="ws-loans" ${editing&&w.loans_enabled?'checked':''}>
+        <span><b>Loan reminders</b> — customers, loans, due-date reminders and messages by SMS, WhatsApp and email</span></label>
       <div class="err" id="ws-err"></div>
     </div>
     <div class="modal-foot"><button class="btn ghost" onclick="closeModal()">Cancel</button>
@@ -111,7 +115,8 @@ function openWorkspaceModal(w){
   $('#ws-save',m).onclick = async ()=>{
     $('#ws-err',m).textContent = '';
     const body = {company_name:$('#ws-co',m).value.trim(), admin_name:$('#ws-name',m).value.trim(),
-                  email:$('#ws-mail',m).value.trim(), social_mode:(m.querySelector('[name=wsmode]:checked')||{}).value};
+                  email:$('#ws-mail',m).value.trim(), social_mode:(m.querySelector('[name=wsmode]:checked')||{}).value,
+                  loans_enabled:$('#ws-loans',m).checked};
     if(!body.company_name){ $('#ws-err',m).textContent = 'Enter the client / company name.'; return; }
     try{
       if(editing){

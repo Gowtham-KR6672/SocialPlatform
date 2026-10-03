@@ -46,7 +46,7 @@ from datetime import datetime, timedelta
 
 from flask import (
     Flask, request, session, jsonify, send_from_directory,
-    render_template, g, abort, send_file, redirect
+    render_template, g, abort, send_file, redirect, make_response
 )
 
 import platforms as P          # V31: real API adapters for every social network
@@ -55,7 +55,7 @@ import platforms as P          # V31: real API adapters for every social network
 #  Paths / config
 # --------------------------------------------------------------------------- #
 BASE_DIR   = os.path.abspath(os.path.dirname(__file__))
-DATA_DIR   = os.path.join(BASE_DIR, "data")
+DATA_DIR   = os.environ.get("DATA_DIR") or os.path.join(BASE_DIR, "data")   # DATA_DIR lets tests use a throwaway DB
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 DB_PATH    = os.path.join(DATA_DIR, "app.db")
 DOWNLOAD_DIR = os.path.join(DATA_DIR, "downloads")
@@ -86,6 +86,15 @@ SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "").strip()
 SUPABASE_BUCKET      = os.environ.get("SUPABASE_BUCKET", "uploads").strip()
 USE_SUPABASE_STORAGE = bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)
 
+# Amazon S3 (AWS hosting) — used instead of Supabase when S3_BUCKET is set. On EC2
+# the server's IAM role supplies the credentials, so no keys live in the app.
+S3_BUCKET      = os.environ.get("S3_BUCKET", "").strip()
+S3_REGION      = (os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1").strip()
+S3_PREFIX      = os.environ.get("S3_PREFIX", "uploads/").strip()
+S3_PUBLIC_BASE = os.environ.get("S3_PUBLIC_BASE", "").strip().rstrip("/")   # optional CloudFront / custom domain
+USE_S3 = bool(S3_BUCKET)
+USE_CLOUD_STORAGE = USE_S3 or USE_SUPABASE_STORAGE
+
 # Claude API key (optional): when set, the online build defaults AI features to
 # Claude. Locally you can keep using Ollama or paste a key in AI settings.
 CLAUDE_API_KEY_ENV = os.environ.get("CLAUDE_API_KEY", "").strip()
@@ -95,6 +104,13 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 app.secret_key = os.environ.get("SECRET_KEY", "va-dashboard-v28-change-me")
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024  # 512 MB uploads
 app.permanent_session_lifetime = timedelta(days=30)   # "Keep me logged in" on the login page
+# Behind a reverse proxy (Caddy on AWS EC2): trust its X-Forwarded-* headers so the app
+# sees https and the real host. Only when told to, so nobody can spoof them locally.
+if os.environ.get("BEHIND_PROXY") == "1":
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+if (os.environ.get("PUBLIC_BASE_URL") or "").startswith("https://"):
+    app.config["SESSION_COOKIE_SECURE"] = True
 
 
 # --------------------------------------------------------------------------- #
@@ -119,7 +135,7 @@ def _local_upload(fname):
     local = os.path.join(UPLOAD_DIR, os.path.basename(fname))
     if os.path.exists(local):
         return local
-    url = _supabase_public_url(os.path.basename(fname))
+    url = _cloud_public_url(os.path.basename(fname))
     if not url:
         return ""
     try:
@@ -198,6 +214,66 @@ def _supabase_delete(fname):
 
 
 # --------------------------------------------------------------------------- #
+#  Amazon S3 (AWS hosting) + one storage API for the rest of the app.
+#  Media objects are public-read (bucket policy) so Instagram / Threads / TikTok
+#  can download them by URL, exactly like the Supabase public bucket.
+# --------------------------------------------------------------------------- #
+_S3 = None
+
+
+def _s3():
+    global _S3
+    if _S3 is None:
+        import boto3
+        _S3 = boto3.client("s3", region_name=S3_REGION)
+    return _S3
+
+
+def _s3_key(fname):
+    return S3_PREFIX + os.path.basename(fname)
+
+
+def _s3_public_url(fname):
+    if not (USE_S3 and fname):
+        return ""
+    key = urllib.parse.quote(_s3_key(fname))
+    if S3_PUBLIC_BASE:
+        return f"{S3_PUBLIC_BASE}/{key}"
+    return f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{key}"
+
+
+def _cloud_public_url(fname):
+    return _s3_public_url(fname) if USE_S3 else _supabase_public_url(fname)
+
+
+def _cloud_upload_path(local_path, fname):
+    """Copy a local file to cloud storage; returns its public URL or ''."""
+    if USE_S3:
+        try:
+            _s3().upload_file(local_path, S3_BUCKET, _s3_key(fname),
+                              ExtraArgs={"ContentType": _guess_content_type(fname)})
+            return _s3_public_url(fname)
+        except Exception as e:  # noqa
+            try: app.logger.warning(f"S3 upload failed for {fname}: {e}")
+            except Exception: pass
+            return ""
+    return _supabase_upload_path(local_path, fname)
+
+
+def _cloud_delete(fname):
+    if not fname:
+        return
+    if USE_S3:
+        try:
+            _s3().delete_object(Bucket=S3_BUCKET, Key=_s3_key(fname))
+        except Exception as e:  # noqa
+            try: app.logger.warning(f"S3 delete failed for {fname}: {e}")
+            except Exception: pass
+        return
+    _cloud_delete(fname)
+
+
+# --------------------------------------------------------------------------- #
 #  Recommended tools  (shown in the Setup window, installed before login)
 #  Download URLs point at the official vendor installers.
 # --------------------------------------------------------------------------- #
@@ -252,6 +328,8 @@ _ID_TABLES = {
     "queue_slots", "review_links", "stats_history", "inbox_comments",
     # V32
     "account_stats", "dm_messages", "brand_kits", "library_items", "bio_pages", "short_links", "link_clicks",
+    # V38 loan reminders
+    "lr_customers", "lr_groups", "lr_loans", "lr_installments", "lr_campaigns", "lr_messages",
 }
 _INSERT_RE = re.compile(r"^\s*INSERT\s+INTO\s+([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
 
@@ -765,6 +843,44 @@ def init_db():
             period_end TEXT,
             created_at TEXT
         );
+        -- V38: loan reminders (per workspace; ws_id = the workspace's primary account)
+        CREATE TABLE IF NOT EXISTS lr_customers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ws_id INTEGER, name TEXT, phone TEXT, whatsapp TEXT, email TEXT, notes TEXT,
+            opt_out TEXT, created_by INTEGER, created_at TEXT, updated_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS lr_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ws_id INTEGER, name TEXT, color TEXT, created_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS lr_group_members (
+            group_id INTEGER, customer_id INTEGER,
+            PRIMARY KEY (group_id, customer_id)
+        );
+        CREATE TABLE IF NOT EXISTS lr_loans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ws_id INTEGER, customer_id INTEGER, loan_ref TEXT, plan TEXT,
+            principal REAL, annual_rate REAL, count INTEGER, amount REAL, first_due TEXT,
+            status TEXT, notes TEXT, created_by INTEGER, created_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS lr_installments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            loan_id INTEGER, ws_id INTEGER, customer_id INTEGER, seq INTEGER,
+            due_date TEXT, amount REAL, kind TEXT, status TEXT, paid_at TEXT, paid_amount REAL
+        );
+        CREATE TABLE IF NOT EXISTS lr_campaigns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ws_id INTEGER, name TEXT, channels TEXT, recipients TEXT, subject TEXT, body TEXT,
+            status TEXT, send_at TEXT, total INTEGER DEFAULT 0, sent INTEGER DEFAULT 0,
+            failed INTEGER DEFAULT 0, created_by INTEGER, created_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS lr_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ws_id INTEGER, customer_id INTEGER, installment_id INTEGER, campaign_id INTEGER,
+            rule_key TEXT, channel TEXT, to_addr TEXT, subject TEXT, body TEXT,
+            status TEXT, error TEXT, provider_id TEXT, dedupe_key TEXT UNIQUE,
+            sent_at TEXT, created_at TEXT
+        );
         """
     if USE_POSTGRES:
         # SQLite's "INTEGER PRIMARY KEY AUTOINCREMENT" becomes Postgres SERIAL.
@@ -1277,6 +1393,7 @@ CONTROLLABLE_TABS = [
     ("input", "Input"), ("calendar", "Calendar"), ("queue", "Queue"), ("published", "Published"),
     ("analytics", "Analytics"), ("inbox", "Inbox"), ("content", "Content Writing"),
     ("library", "Library"), ("bio", "Link in bio"), ("reports", "Reports"),
+    ("loans", "Loan reminders"),
 ]
 V35_NEW_TABS = ["queue", "analytics", "inbox", "library", "bio"]   # added to existing section lists once
 ALL_TAB_KEYS = [k for k, _ in CONTROLLABLE_TABS]
@@ -1492,6 +1609,8 @@ def user_public(u):
         "subscription": (subscription_info(get_db(), u) if u else None),
         # first-time onboarding — the Welcome popup + wizard show only until done
         "onboarding_done": bool(_get("onboarding_done")),
+        # V38: loan reminders switched on for this login's workspace
+        "loans_enabled": loans_enabled(get_db(), billing_user_id(u)) or is_super(u),
         "totp_enabled": bool(_get("totp_enabled")),
         # per-user platform connection status (each user connects their OWN)
         "platforms": _user_platform_map(u),
@@ -1523,8 +1642,8 @@ def uploaded_file(fn):
     local = os.path.join(UPLOAD_DIR, fn)
     if os.path.exists(local):
         return send_from_directory(UPLOAD_DIR, fn)
-    if USE_SUPABASE_STORAGE:
-        return redirect(_supabase_public_url(fn))
+    if USE_CLOUD_STORAGE:
+        return redirect(_cloud_public_url(fn))
     return send_from_directory(UPLOAD_DIR, fn)
 
 
@@ -2128,6 +2247,7 @@ def _workspace_public(db, r):
             "created_at": r.get("created_at") or "", "last_active": max(seen) if seen else "",
             "disabled": bool(r.get("disabled")), "users": len(members), "platforms": sorted({a["platform"] for a in accts}),
             "accounts": len(accts), "posts": posts, "social_mode": ws_social_mode(db, r["id"]),
+            "loans_enabled": loans_enabled(db, r["id"]),
             "totp_enabled": bool(r.get("totp_enabled"))}
 
 
@@ -2158,6 +2278,8 @@ def api_workspaces():
         db.commit()
         row = db.execute("SELECT * FROM users WHERE lower(username)=lower(?)", (username,)).fetchone()
         uset_setting(db, row["id"], "social_mode", mode)
+        if d.get("loans_enabled"):
+            uset_setting(db, row["id"], "loans_enabled", "1")
         log_activity(db, u, "workspace_created", "workspace", row["id"], company)
         return jsonify({"ok": True, "workspace": _workspace_public(db, row)})
     rows = db.execute("SELECT * FROM users WHERE COALESCE(role,'user')<>'superadmin' AND parent_id IS NULL "
@@ -2195,6 +2317,8 @@ def api_workspace_edit(wid):
         db.execute("UPDATE users SET display_name=? WHERE id=?", (d["admin_name"].strip(), wid))
     if d.get("social_mode") in SOCIAL_MODES:
         uset_setting(db, wid, "social_mode", d["social_mode"])
+    if "loans_enabled" in d:
+        uset_setting(db, wid, "loans_enabled", "1" if d.get("loans_enabled") else "")
     if "disabled" in d:
         db.execute("UPDATE users SET disabled=? WHERE id=?", (1 if d.get("disabled") else 0, wid))
         log_activity(db, u, "workspace_suspended" if d.get("disabled") else "workspace_activated",
@@ -2245,6 +2369,8 @@ def _delete_workspace(db, wid):
     run("DELETE FROM queue_slots WHERE owner_id IN ({ph})", ids)
     for tbl in ("notification_reads", "notification_hidden", "conversation_members"):
         run(f"DELETE FROM {tbl} WHERE user_id IN ({{ph}})", ids)
+    for tbl in ("lr_messages", "lr_campaigns", "lr_installments", "lr_loans", "lr_groups", "lr_customers"):
+        run(f"DELETE FROM {tbl} WHERE ws_id IN ({{ph}})", [wid])
     for i in ids:                         # per-user settings are stored as "u<id>_<name>"; "_" must be escaped
         run("DELETE FROM settings WHERE key LIKE ? ESCAPE '!'", [f"u{i}!_%"])
     run("DELETE FROM users WHERE id IN ({ph})", ids)
@@ -3300,8 +3426,8 @@ def _safe_save(fileobj):
     fileobj.save(local_path)
     # Mirror to Supabase Storage (online) so the file survives restarts and is
     # publicly fetchable; local copy stays for fast serving + frame extraction.
-    if USE_SUPABASE_STORAGE:
-        _supabase_upload_path(local_path, fname)
+    if USE_CLOUD_STORAGE:
+        _cloud_upload_path(local_path, fname)
     return fname
 
 
@@ -3636,8 +3762,8 @@ def _item_platforms(row):
 def _public_media_url(db, fname):
     if not fname:
         return ""
-    if USE_SUPABASE_STORAGE:
-        return _supabase_public_url(fname)
+    if USE_CLOUD_STORAGE:
+        return _cloud_public_url(fname)
     base = (get_setting(db, "public_base_url") or "").strip().rstrip("/")
     return f"{base}/uploads/{urllib.parse.quote(fname)}" if base.startswith("https://") else ""
 
@@ -4129,7 +4255,7 @@ def _purge_calendar_files(db, row):
                     os.remove(pth)
             except Exception:
                 pass
-            _supabase_delete(f)
+            _cloud_delete(f)
     if _rget(row, "drive_file_id") and not _rget(row, "recycled_from"):
         orow = db.execute("SELECT * FROM users WHERE id=?", (row["owner_id"],)).fetchone() if row["owner_id"] else None
         if orow:
@@ -4541,8 +4667,8 @@ def _convert_video(cid, platform_key, mode, user_id):
         r = subprocess.run(cmd, capture_output=True, timeout=1800, text=True)
         if r.returncode != 0 or not os.path.exists(dst):
             raise RuntimeError("FFmpeg failed: " + (r.stderr or "")[-300:])
-        if USE_SUPABASE_STORAGE:
-            _supabase_upload_path(dst, out_name)
+        if USE_CLOUD_STORAGE:
+            _cloud_upload_path(dst, out_name)
         row = db.execute("SELECT * FROM calendar_items WHERE id=?", (cid,)).fetchone()
         variants = _jl(_rget(row, "variants"), {})
         old = variants.get(platform_key)
@@ -6575,7 +6701,7 @@ def _oauth_cfg():
 
 def _redirect_base():
     """Base URL used to build OAuth redirect URIs (configurable; else request host)."""
-    base = get_setting(get_db(), "oauth_redirect_base").strip().rstrip("/")
+    base = (get_setting(get_db(), "oauth_redirect_base") or os.environ.get("PUBLIC_BASE_URL") or "").strip().rstrip("/")
     if base:
         return base
     return request.host_url.rstrip("/")
@@ -6739,7 +6865,7 @@ def _purge_item_storage(db, row):
         except Exception:
             pass
         # Supabase Storage copy
-        _supabase_delete(fname)
+        _cloud_delete(fname)
     # Google Drive copy — needs the ORIGINAL owner's token
     dfid = row["drive_file_id"] if ("drive_file_id" in keys) else None
     if dfid:
@@ -8108,7 +8234,7 @@ def api_platforms():
                     "is_ws_admin": is_primary_user(u),
                     "redirect_base": get_setting(db, "oauth_redirect_base") or "",
                     "public_base_url": get_setting(db, "public_base_url") or "",
-                    "supabase_storage": USE_SUPABASE_STORAGE})
+                    "supabase_storage": USE_CLOUD_STORAGE})
 
 
 @app.route("/api/platforms/<plat>/creds", methods=["POST"])
@@ -8372,8 +8498,8 @@ def api_calendar_thumbnail(cid):
                         "-q:v", "2", os.path.join(UPLOAD_DIR, fname)], capture_output=True, timeout=60)
         if not os.path.exists(os.path.join(UPLOAD_DIR, fname)):
             return jsonify({"error": "Couldn't grab that frame — try another time."}), 400
-        if USE_SUPABASE_STORAGE:
-            _supabase_upload_path(os.path.join(UPLOAD_DIR, fname), fname)
+        if USE_CLOUD_STORAGE:
+            _cloud_upload_path(os.path.join(UPLOAD_DIR, fname), fname)
     db.execute("UPDATE calendar_items SET thumbnail=? WHERE id=?", (fname, cid))
     db.commit()
     log_activity(db, u, "thumbnail", "item", cid, fname)
@@ -9505,7 +9631,7 @@ def api_library_item(lid):
                 os.remove(os.path.join(UPLOAD_DIR, r["filename"]))
             except Exception:
                 pass
-            _supabase_delete(r["filename"])
+            _cloud_delete(r["filename"])
         return jsonify({"ok": True})
     d = request.get_json(force=True) or {}
     db.execute("UPDATE library_items SET title=COALESCE(?, title), body=COALESCE(?, body) WHERE id=?",
@@ -10041,9 +10167,823 @@ def _is_due(r, today, hm, utc_now):
     return False
 
 
+# =========================================================================== #
+#  V38 : LOAN REMINDERS — customers, groups, loans + payment schedules,
+#  SMS / WhatsApp / email channels per workspace, automatic due-date
+#  reminders and one-off messages to chosen customers or groups.
+#  Everything is scoped to the workspace (ws_id = the primary account id).
+# =========================================================================== #
+import messaging as MSG
+
+LR_SETTINGS_DEFAULT = {"enabled": False, "send_time": "09:00", "timezone": "America/New_York",
+                       "company": "", "rules": []}
+US_TIMEZONES = [("America/New_York", "Eastern"), ("America/Chicago", "Central"), ("America/Denver", "Mountain"),
+                ("America/Phoenix", "Arizona"), ("America/Los_Angeles", "Pacific"), ("America/Anchorage", "Alaska"),
+                ("Pacific/Honolulu", "Hawaii")]
+
+
+def loans_enabled(db, ws_id):
+    return bool(ws_id) and uget_setting(db, ws_id, "loans_enabled") == "1"
+
+
+def _lr_fail(msg, code=403):
+    abort(make_response(jsonify({"error": msg}), code))
+
+
+def _lr_ctx(manage=False):
+    """(user, db, ws_id) for a loan-reminders request, or a 403 with the reason."""
+    u = require_login()
+    db = get_db()
+    ws = billing_user_id(u)
+    if not (is_super(u) or loans_enabled(db, ws)):
+        _lr_fail("Loan reminders aren't switched on for this workspace. Ask your administrator.")
+    if is_subuser(u) and "loans" not in (resolved_allowed_tabs(u) or []):
+        _lr_fail("You don't have access to Loan reminders.")
+    if manage and is_subuser(u):
+        _lr_fail("Only the workspace admin can change messaging channels and reminder rules.")
+    return u, db, ws
+
+
+def _lr_settings(db, ws):
+    out = dict(LR_SETTINGS_DEFAULT)
+    out.update(_jl(uget_setting(db, ws, "lr_rules"), {}))
+    if not out.get("company"):
+        r = db.execute("SELECT company_name, username FROM users WHERE id=?", (ws,)).fetchone()
+        out["company"] = (r and (r["company_name"] or r["username"])) or ""
+    return out
+
+
+def _lr_channel(db, ws, ch):
+    """Saved provider config for one channel ({} when not set up). Stored encrypted."""
+    return _jl(uget_setting(db, ws, f"lr_ch_{ch}_secret"), {}) or {}
+
+
+def _lr_channel_public(cfg):
+    """Config for the browser: secret fields are never sent back, only whether they're set."""
+    out = {}
+    for k, v in (cfg or {}).items():
+        if k.endswith("_secret"):
+            out[k + "_set"] = bool(v)
+        else:
+            out[k] = v
+    return out
+
+
+def _lr_customer_public(r, groups=None):
+    r = dict(r)
+    return {"id": r["id"], "name": r.get("name") or "", "phone": r.get("phone") or "",
+            "whatsapp": r.get("whatsapp") or "", "email": r.get("email") or "", "notes": r.get("notes") or "",
+            "opt_out": _jl(r.get("opt_out"), []), "groups": groups or [], "created_at": r.get("created_at") or ""}
+
+
+def _lr_own(db, table, rid, ws):
+    row = db.execute(f"SELECT * FROM {table} WHERE id=? AND ws_id=?", (rid, ws)).fetchone()
+    if not row:
+        _lr_fail("Not found.", 404)
+    return row
+
+
+def _lr_tz(settings):
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(settings.get("timezone") or "America/New_York")
+    except Exception:
+        return None
+
+
+def _lr_now(settings):
+    tz = _lr_tz(settings)
+    return datetime.now(tz) if tz else datetime.utcnow() - timedelta(hours=5)
+
+
+def _lr_today(settings):
+    return _lr_now(settings).date()
+
+
+def _lr_values(db, ws, cust, inst=None, settings=None):
+    """Placeholder values for a message to one customer (and one installment, if any)."""
+    settings = settings or _lr_settings(db, ws)
+    name = (cust["name"] or "").strip()
+    v = {"name": name, "first_name": name.split(" ")[0] if name else "", "company": settings.get("company", ""),
+         "amount": "", "due_date": "", "loan_ref": "", "installment": "", "days_left": "", "days_overdue": "",
+         "balance": ""}
+    if inst is None:              # one-off messages use the customer's next unpaid payment, if any
+        inst = db.execute("SELECT * FROM lr_installments WHERE customer_id=? AND ws_id=? AND status='due' "
+                          "ORDER BY due_date LIMIT 1", (cust["id"], ws)).fetchone()
+    if inst is not None:
+        loan = db.execute("SELECT * FROM lr_loans WHERE id=?", (inst["loan_id"],)).fetchone()
+        n = db.execute("SELECT COUNT(*) FROM lr_installments WHERE loan_id=?", (inst["loan_id"],)).fetchone()[0]
+        bal = db.execute("SELECT COALESCE(SUM(amount),0) FROM lr_installments WHERE loan_id=? AND status='due'",
+                         (inst["loan_id"],)).fetchone()[0]
+        try:
+            days = (datetime.strptime(inst["due_date"], "%Y-%m-%d").date() - _lr_today(settings)).days
+        except Exception:
+            days = 0
+        v.update(amount=MSG.money(inst["amount"]), due_date=MSG.nice_date(inst["due_date"]),
+                 loan_ref=(loan["loan_ref"] if loan else "") or "", installment=f"{inst['seq']} of {n}",
+                 days_left=str(max(days, 0)), days_overdue=str(max(-days, 0)), balance=MSG.money(bal))
+    return v
+
+
+def _lr_send_one(db, ws, cust, channel, body, subject="", values=None, use_template=False):
+    """Send one message on one channel. Returns (status, error, provider_id, to)."""
+    cfg = _lr_channel(db, ws, channel)
+    if channel in _jl(cust["opt_out"], []):
+        return "skipped", "Customer opted out of this channel.", "", ""
+    if channel == "sms":
+        to = cust["phone"]
+        ok, info = MSG.send_sms(cfg, to, body)
+    elif channel == "whatsapp":
+        to = cust["whatsapp"] or cust["phone"]
+        ok, info = MSG.send_whatsapp(cfg, to, body, values, use_template)
+    else:
+        to = cust["email"]
+        ok, info = MSG.send_mail(cfg, to, subject, body)
+    if not ok and info.startswith("No valid"):
+        return "skipped", info, "", to or ""
+    return ("sent", "", info, to) if ok else ("failed", info, "", to)
+
+
+def _lr_log(db, ws, cust_id, channel, body, subject="", inst_id=None, camp_id=None, rule_key="", dedupe=None):
+    """Create the log row first ('sending'); returns its id, or None if this exact
+    reminder was already logged (dedupe key) — so a reminder is never sent twice."""
+    cols = ("INTO lr_messages (ws_id, customer_id, installment_id, campaign_id, rule_key, channel, subject, body, "
+            "status, dedupe_key, created_at) VALUES (?,?,?,?,?,?,?,?,'sending',?,?)")
+    args = (ws, cust_id, inst_id, camp_id, rule_key, channel, subject, body, dedupe, _now())
+    if not dedupe:
+        # plain INSERT so Postgres returns the new id (INSERT OR IGNORE gets no RETURNING id)
+        mid = db.execute("INSERT " + cols, args).lastrowid
+        db.commit()
+        return mid
+    cur = db.execute("INSERT OR IGNORE " + cols, args)
+    db.commit()
+    if not cur.rowcount:
+        return None
+    row = db.execute("SELECT id FROM lr_messages WHERE dedupe_key=?", (dedupe,)).fetchone()
+    return row["id"] if row else None
+
+
+def _lr_finish(db, mid, status, err, pid, to):
+    db.execute("UPDATE lr_messages SET status=?, error=?, provider_id=?, to_addr=?, sent_at=? WHERE id=?",
+               (status, (err or "")[:500], pid or "", to or "", _now() if status == "sent" else None, mid))
+    db.commit()
+
+
+# ---- automatic reminders (runs from the scheduler every few minutes) ----------------------- #
+def _run_loan_reminders():
+    try:
+        db = db_connect()
+        rows = db.execute("SELECT key FROM settings WHERE key LIKE ? ESCAPE '!' AND value='1'",
+                          ("u%!_loans!_enabled",)).fetchall()
+        ws_ids = set()
+        for r in rows:
+            head = r["key"][1:].split("_", 1)[0]
+            if head.isdigit():
+                ws_ids.add(int(head))
+        ws_ids |= set(admin_ids(db))                       # the SuperAdmin's own workspace
+        for ws in ws_ids:
+            try:
+                _lr_reminders_for(db, ws)
+            except Exception as e:  # noqa
+                print("loan reminders:", ws, e)
+        db.close()
+    except Exception as e:  # noqa
+        print("loan reminders:", e)
+
+
+def _lr_reminders_for(db, ws):
+    st = _lr_settings(db, ws)
+    if not st.get("enabled") or not st.get("rules"):
+        return
+    now = _lr_now(st)
+    if now.strftime("%H:%M") < (st.get("send_time") or "09:00"):
+        return                                             # not time yet today (workspace time zone)
+    today = now.date()
+    for rule in st["rules"]:
+        try:
+            off = int(rule.get("offset", 0))
+        except Exception:
+            continue
+        chans = [c for c in (rule.get("channels") or []) if c in MSG.CHANNELS]
+        text = (rule.get("template") or "").strip()
+        if not (chans and text):
+            continue
+        due = (today - timedelta(days=off)).isoformat()      # offset -3 = 3 days before the due date
+        insts = db.execute("SELECT i.* FROM lr_installments i JOIN lr_loans l ON l.id=i.loan_id "
+                           "WHERE i.ws_id=? AND i.due_date=? AND i.status='due' AND l.status='active'",
+                           (ws, due)).fetchall()
+        for inst in insts:
+            cust = db.execute("SELECT * FROM lr_customers WHERE id=? AND ws_id=?", (inst["customer_id"], ws)).fetchone()
+            if not cust:
+                continue
+            vals = _lr_values(db, ws, cust, inst, st)
+            body = MSG.render(text, vals)
+            subj = MSG.render(rule.get("subject") or "Payment reminder — {due_date}", vals)
+            for ch in chans:
+                key = f"rem:{inst['id']}:{off}:{ch}"
+                mid = _lr_log(db, ws, cust["id"], ch, body, subj if ch == "email" else "", inst["id"], None,
+                              f"offset{off:+d}", dedupe=key)
+                if not mid:
+                    continue                                   # already sent for this installment + rule
+                status, err, pid, to = _lr_send_one(db, ws, cust, ch, body, subj, vals, use_template=True)
+                _lr_finish(db, mid, status, err, pid, to)
+
+
+# ---- one-off messages / campaigns ---------------------------------------------------------- #
+def _lr_campaign_recipients(db, ws, rec):
+    ids = set()
+    if rec.get("all"):
+        ids |= {r["id"] for r in db.execute("SELECT id FROM lr_customers WHERE ws_id=?", (ws,)).fetchall()}
+    gids = [int(g) for g in (rec.get("group_ids") or []) if str(g).isdigit()]
+    if gids:
+        ph = ",".join("?" * len(gids))
+        ids |= {r["customer_id"] for r in db.execute(
+            f"SELECT m.customer_id FROM lr_group_members m JOIN lr_groups g ON g.id=m.group_id "
+            f"WHERE g.ws_id=? AND m.group_id IN ({ph})", [ws] + gids).fetchall()}
+    cids = [int(c) for c in (rec.get("customer_ids") or []) if str(c).isdigit()]
+    if cids:
+        ph = ",".join("?" * len(cids))
+        ids |= {r["id"] for r in db.execute(f"SELECT id FROM lr_customers WHERE ws_id=? AND id IN ({ph})",
+                                            [ws] + cids).fetchall()}
+    return sorted(ids)
+
+
+def _lr_run_campaign(camp_id):
+    try:
+        db = db_connect()
+        cur = db.execute("UPDATE lr_campaigns SET status='sending' WHERE id=? AND status IN ('queued','scheduled')",
+                         (camp_id,))
+        db.commit()
+        if cur.rowcount != 1:
+            db.close()
+            return
+        c = db.execute("SELECT * FROM lr_campaigns WHERE id=?", (camp_id,)).fetchone()
+        ws, chans = c["ws_id"], [x for x in _jl(c["channels"], []) if x in MSG.CHANNELS]
+        st = _lr_settings(db, ws)
+        sent = failed = 0
+        for cid in _lr_campaign_recipients(db, ws, _jl(c["recipients"], {})):
+            cust = db.execute("SELECT * FROM lr_customers WHERE id=? AND ws_id=?", (cid, ws)).fetchone()
+            if not cust:
+                continue
+            vals = _lr_values(db, ws, cust, None, st)
+            body, subj = MSG.render(c["body"], vals), MSG.render(c["subject"] or "", vals)
+            for ch in chans:
+                mid = _lr_log(db, ws, cid, ch, body, subj if ch == "email" else "", None, camp_id, "campaign")
+                status, err, pid, to = _lr_send_one(db, ws, cust, ch, body, subj, vals)
+                _lr_finish(db, mid, status, err, pid, to)
+                sent += status == "sent"
+                failed += status == "failed"
+            db.execute("UPDATE lr_campaigns SET sent=?, failed=? WHERE id=?", (sent, failed, camp_id))
+            db.commit()
+        db.execute("UPDATE lr_campaigns SET status='done', sent=?, failed=? WHERE id=?", (sent, failed, camp_id))
+        db.commit()
+        db.close()
+    except Exception as e:  # noqa
+        print("loan campaign:", camp_id, e)
+
+
+def _run_due_campaigns():
+    try:
+        db = db_connect()
+        rows = db.execute("SELECT id FROM lr_campaigns WHERE status='scheduled' AND send_at<=?",
+                          (datetime.utcnow().isoformat(),)).fetchall()
+        db.close()
+        for r in rows:
+            _lr_run_campaign(r["id"])
+    except Exception as e:  # noqa
+        print("loan campaigns:", e)
+
+
+# ---- API: overview, settings, channels ----------------------------------------------------- #
+@app.route("/api/loans/meta")
+def api_loans_meta():
+    u, db, ws = _lr_ctx()
+    chans = {ch: {"provider": _lr_channel(db, ws, ch).get("provider", "")} for ch in MSG.CHANNELS}
+    return jsonify({"plans": MSG.PLAN_TYPES, "placeholders": MSG.PLACEHOLDERS, "timezones": US_TIMEZONES,
+                    "channels": chans, "can_manage": not is_subuser(u)})
+
+
+@app.route("/api/loans/overview")
+def api_loans_overview():
+    u, db, ws = _lr_ctx()
+    st = _lr_settings(db, ws)
+    today = _lr_today(st)
+    t0, t7 = today.isoformat(), (today + timedelta(days=7)).isoformat()
+    one = lambda q, a: db.execute(q, a).fetchone()[0]
+    since = (datetime.utcnow() - timedelta(days=30)).isoformat()
+    upcoming = db.execute(
+        "SELECT i.*, c.name, l.loan_ref FROM lr_installments i JOIN lr_customers c ON c.id=i.customer_id "
+        "JOIN lr_loans l ON l.id=i.loan_id WHERE i.ws_id=? AND i.status='due' AND l.status='active' "
+        "AND i.due_date<=? ORDER BY i.due_date LIMIT 60", (ws, t7)).fetchall()
+    return jsonify({
+        "customers": one("SELECT COUNT(*) FROM lr_customers WHERE ws_id=?", (ws,)),
+        "active_loans": one("SELECT COUNT(*) FROM lr_loans WHERE ws_id=? AND status='active'", (ws,)),
+        "due_week": one("SELECT COUNT(*) FROM lr_installments i JOIN lr_loans l ON l.id=i.loan_id WHERE i.ws_id=? "
+                        "AND i.status='due' AND l.status='active' AND i.due_date>=? AND i.due_date<=?", (ws, t0, t7)),
+        "overdue": one("SELECT COUNT(*) FROM lr_installments i JOIN lr_loans l ON l.id=i.loan_id WHERE i.ws_id=? "
+                       "AND i.status='due' AND l.status='active' AND i.due_date<?", (ws, t0)),
+        "overdue_amount": one("SELECT COALESCE(SUM(i.amount),0) FROM lr_installments i JOIN lr_loans l ON l.id=i.loan_id "
+                              "WHERE i.ws_id=? AND i.status='due' AND l.status='active' AND i.due_date<?", (ws, t0)),
+        "sent_30d": one("SELECT COUNT(*) FROM lr_messages WHERE ws_id=? AND status='sent' AND created_at>=?", (ws, since)),
+        "failed_30d": one("SELECT COUNT(*) FROM lr_messages WHERE ws_id=? AND status='failed' AND created_at>=?", (ws, since)),
+        "reminders_on": bool(st.get("enabled") and st.get("rules")),
+        "today": t0,
+        "upcoming": [{"id": r["id"], "customer_id": r["customer_id"], "name": r["name"], "loan_ref": r["loan_ref"] or "",
+                      "loan_id": r["loan_id"], "due_date": r["due_date"], "amount": r["amount"], "seq": r["seq"]}
+                     for r in upcoming],
+    })
+
+
+@app.route("/api/loans/settings", methods=["GET", "POST"])
+def api_loans_settings():
+    u, db, ws = _lr_ctx(manage=(request.method == "POST"))
+    if request.method == "POST":
+        d = request.get_json(force=True) or {}
+        rules = []
+        for r in (d.get("rules") or [])[:12]:
+            try:
+                off = max(-60, min(60, int(r.get("offset", 0))))
+            except Exception:
+                continue
+            chans = [c for c in (r.get("channels") or []) if c in MSG.CHANNELS]
+            tpl = (r.get("template") or "").strip()[:1500]
+            if chans and tpl:
+                rules.append({"offset": off, "channels": chans, "template": tpl,
+                              "subject": (r.get("subject") or "").strip()[:200]})
+        tz = d.get("timezone") if d.get("timezone") in dict(US_TIMEZONES) else "America/New_York"
+        hm = d.get("send_time") or "09:00"
+        if not re.match(r"^\d{2}:\d{2}$", hm):
+            hm = "09:00"
+        st = {"enabled": bool(d.get("enabled")), "send_time": hm, "timezone": tz,
+              "company": (d.get("company") or "").strip()[:120], "rules": rules}
+        uset_setting(db, ws, "lr_rules", json.dumps(st))
+        log_activity(db, u, "loan_rules", "workspace", ws,
+                     f"{len(rules)} reminder rule(s), {'on' if st['enabled'] else 'off'}")
+    return jsonify(_lr_settings(db, ws))
+
+
+@app.route("/api/loans/channels", methods=["GET", "POST"])
+def api_loans_channels():
+    u, db, ws = _lr_ctx(manage=(request.method == "POST"))
+    if request.method == "POST":
+        d = request.get_json(force=True) or {}
+        ch = d.get("channel")
+        if ch not in MSG.CHANNELS:
+            return jsonify({"error": "Unknown channel."}), 400
+        prov = d.get("provider") or ""
+        if not prov:                                         # remove the channel
+            uset_setting(db, ws, f"lr_ch_{ch}_secret", "")
+            return jsonify({"ok": True})
+        spec = MSG.PROVIDERS[ch].get(prov)
+        if not spec:
+            return jsonify({"error": "Unknown provider."}), 400
+        old = _lr_channel(db, ws, ch)
+        cfg = {"provider": prov}
+        for key, _lab, _ph in spec["fields"]:
+            v = (d.get("fields") or {}).get(key)
+            if key.endswith("_secret") and not v and old.get("provider") == prov:
+                v = old.get(key, "")                         # blank keeps the saved secret
+            cfg[key] = (v or "").strip()
+        uset_setting(db, ws, f"lr_ch_{ch}_secret", json.dumps(cfg))
+        log_activity(db, u, "loan_channel", "workspace", ws, f"{MSG.CHANNEL_LABEL[ch]}: {spec['label']}")
+    return jsonify({"providers": {ch: {k: {"label": v["label"], "fields": v["fields"]} for k, v in p.items()}
+                                  for ch, p in MSG.PROVIDERS.items()},
+                    "channels": {ch: _lr_channel_public(_lr_channel(db, ws, ch)) for ch in MSG.CHANNELS}})
+
+
+@app.route("/api/loans/channels/test", methods=["POST"])
+def api_loans_channel_test():
+    u, db, ws = _lr_ctx(manage=True)
+    d = request.get_json(force=True) or {}
+    ch, to = d.get("channel"), (d.get("to") or "").strip()
+    cfg = _lr_channel(db, ws, ch)
+    who = _lr_settings(db, ws).get("company") or "Social Platform"
+    text = f"Test message from {who}: your {MSG.CHANNEL_LABEL.get(ch, '')} channel works."
+    if ch == "sms":
+        ok, info = MSG.send_sms(cfg, to, text)
+    elif ch == "whatsapp":
+        ok, info = MSG.send_whatsapp(cfg, to, text)
+    elif ch == "email":
+        ok, info = MSG.send_mail(cfg, to, "Test message", text)
+    else:
+        return jsonify({"error": "Unknown channel."}), 400
+    if ok:
+        return jsonify({"ok": True, "message": "Sent. Check the phone / inbox."})
+    return jsonify({"error": info}), 400
+
+
+# ---- API: customers and groups ------------------------------------------------------------- #
+def _lr_groups_of(db, ws, cust_ids):
+    if not cust_ids:
+        return {}
+    ph = ",".join("?" * len(cust_ids))
+    out = {}
+    for r in db.execute(f"SELECT m.customer_id, g.id, g.name, g.color FROM lr_group_members m "
+                        f"JOIN lr_groups g ON g.id=m.group_id WHERE g.ws_id=? AND m.customer_id IN ({ph})",
+                        [ws] + list(cust_ids)).fetchall():
+        out.setdefault(r["customer_id"], []).append({"id": r["id"], "name": r["name"], "color": r["color"] or ""})
+    return out
+
+
+def _lr_clean_customer(d):
+    name = (d.get("name") or "").strip()[:120]
+    phone = (d.get("phone") or "").strip()[:40]
+    wa = (d.get("whatsapp") or "").strip()[:40]
+    email = (d.get("email") or "").strip()[:200]
+    if not name:
+        raise ValueError("Enter the customer's name.")
+    if phone and not MSG.us_phone(phone):
+        raise ValueError(f"\"{phone}\" isn't a valid US mobile number (10 digits, or +country code).")
+    if wa and not MSG.us_phone(wa):
+        raise ValueError(f"\"{wa}\" isn't a valid WhatsApp number.")
+    if email and not MSG.valid_email(email):
+        raise ValueError(f"\"{email}\" isn't a valid email address.")
+    if not (phone or wa or email):
+        raise ValueError("Add at least a mobile number, WhatsApp number or email.")
+    return {"name": name, "phone": MSG.us_phone(phone) if phone else "", "whatsapp": MSG.us_phone(wa) if wa else "",
+            "email": email, "notes": (d.get("notes") or "").strip()[:1000],
+            "opt_out": json.dumps([c for c in (d.get("opt_out") or []) if c in MSG.CHANNELS])}
+
+
+def _lr_set_groups(db, ws, cid, group_ids):
+    valid = {r["id"] for r in db.execute("SELECT id FROM lr_groups WHERE ws_id=?", (ws,)).fetchall()}
+    db.execute("DELETE FROM lr_group_members WHERE customer_id=?", (cid,))
+    for g in group_ids or []:
+        if str(g).isdigit() and int(g) in valid:
+            db.execute("INSERT OR IGNORE INTO lr_group_members (group_id, customer_id) VALUES (?,?)", (int(g), cid))
+
+
+def _lr_insert_customer(db, ws, u, c):
+    return db.execute("INSERT INTO lr_customers (ws_id, name, phone, whatsapp, email, notes, opt_out, created_by, "
+                      "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                      (ws, c["name"], c["phone"], c["whatsapp"], c["email"], c["notes"], c["opt_out"], u["id"],
+                       _now(), _now())).lastrowid
+
+
+@app.route("/api/loans/customers", methods=["GET", "POST"])
+def api_loans_customers():
+    u, db, ws = _lr_ctx()
+    if request.method == "POST":
+        d = request.get_json(force=True) or {}
+        try:
+            c = _lr_clean_customer(d)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        cid = _lr_insert_customer(db, ws, u, c)
+        _lr_set_groups(db, ws, cid, d.get("group_ids"))
+        db.commit()
+        log_activity(db, u, "customer_added", "customer", cid, c["name"])
+        return jsonify({"ok": True, "id": cid})
+    q, gid = (request.args.get("q") or "").strip().lower(), request.args.get("group")
+    sql, args = "SELECT * FROM lr_customers WHERE ws_id=?", [ws]
+    if q:
+        sql += " AND (lower(name) LIKE ? OR phone LIKE ? OR lower(email) LIKE ?)"
+        args += [f"%{q}%"] * 3
+    if gid and gid.isdigit():
+        sql += " AND id IN (SELECT customer_id FROM lr_group_members WHERE group_id=?)"
+        args.append(int(gid))
+    rows = db.execute(sql + " ORDER BY lower(name) LIMIT 2000", args).fetchall()
+    groups = _lr_groups_of(db, ws, [r["id"] for r in rows])
+    stats = {}
+    if rows:
+        ph = ",".join("?" * len(rows))
+        for r in db.execute(f"SELECT i.customer_id, MIN(i.due_date) nxt, COUNT(*) n FROM lr_installments i "
+                            f"JOIN lr_loans l ON l.id=i.loan_id WHERE i.ws_id=? AND i.status='due' AND l.status='active' "
+                            f"AND i.customer_id IN ({ph}) GROUP BY i.customer_id",
+                            [ws] + [r["id"] for r in rows]).fetchall():
+            stats[r["customer_id"]] = {"next_due": r["nxt"], "open": r["n"]}
+    out = []
+    for r in rows:
+        x = _lr_customer_public(r, groups.get(r["id"], []))
+        x.update(stats.get(r["id"], {"next_due": "", "open": 0}))
+        out.append(x)
+    return jsonify({"customers": out})
+
+
+@app.route("/api/loans/customers/<int:cid>", methods=["GET", "PATCH", "DELETE"])
+def api_loans_customer(cid):
+    u, db, ws = _lr_ctx()
+    row = _lr_own(db, "lr_customers", cid, ws)
+    if request.method == "DELETE":
+        for l in db.execute("SELECT id FROM lr_loans WHERE customer_id=? AND ws_id=?", (cid, ws)).fetchall():
+            db.execute("DELETE FROM lr_installments WHERE loan_id=?", (l["id"],))
+        db.execute("DELETE FROM lr_loans WHERE customer_id=? AND ws_id=?", (cid, ws))
+        db.execute("DELETE FROM lr_group_members WHERE customer_id=?", (cid,))
+        db.execute("DELETE FROM lr_customers WHERE id=?", (cid,))
+        db.commit()
+        log_activity(db, u, "customer_deleted", "customer", cid, row["name"])
+        return jsonify({"ok": True})
+    if request.method == "PATCH":
+        d = request.get_json(force=True) or {}
+        merged = _lr_customer_public(row)
+        merged.update({k: d[k] for k in ("name", "phone", "whatsapp", "email", "notes", "opt_out") if k in d})
+        try:
+            c = _lr_clean_customer(merged)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        db.execute("UPDATE lr_customers SET name=?, phone=?, whatsapp=?, email=?, notes=?, opt_out=?, updated_at=? "
+                   "WHERE id=?", (c["name"], c["phone"], c["whatsapp"], c["email"], c["notes"], c["opt_out"], _now(), cid))
+        if "group_ids" in d:
+            _lr_set_groups(db, ws, cid, d.get("group_ids"))
+        db.commit()
+        row = _lr_own(db, "lr_customers", cid, ws)
+    loans = [_lr_loan_public(db, l) for l in
+             db.execute("SELECT * FROM lr_loans WHERE customer_id=? AND ws_id=? ORDER BY id DESC", (cid, ws)).fetchall()]
+    msgs = [dict(m) for m in db.execute("SELECT id, channel, status, error, body, to_addr, created_at, rule_key "
+                                        "FROM lr_messages WHERE customer_id=? AND ws_id=? ORDER BY id DESC LIMIT 50",
+                                        (cid, ws)).fetchall()]
+    return jsonify({"customer": _lr_customer_public(row, _lr_groups_of(db, ws, [cid]).get(cid, [])),
+                    "loans": loans, "messages": msgs})
+
+
+@app.route("/api/loans/customers/import", methods=["POST"])
+def api_loans_customers_import():
+    """CSV columns (header row, any order): name, phone, whatsapp, email, group, notes —
+    and optionally a loan: plan, amount, principal, rate, payments, first_due, loan_ref."""
+    u, db, ws = _lr_ctx()
+    import csv
+    import io as _io
+    text = (request.get_json(force=True) or {}).get("csv") or ""
+    rows = list(csv.DictReader(_io.StringIO(text.strip())))
+    if not rows:
+        return jsonify({"error": "The file is empty or has no header row."}), 400
+    norm = lambda r: {(k or "").strip().lower().replace(" ", "_"): (v or "").strip() for k, v in r.items()}
+    groups = {r["name"].lower(): r["id"] for r in db.execute("SELECT id, name FROM lr_groups WHERE ws_id=?", (ws,)).fetchall()}
+    added, loans, errors = 0, 0, []
+    for i, raw in enumerate(rows[:5000], start=2):
+        r = norm(raw)
+        try:
+            c = _lr_clean_customer(r)
+        except ValueError as e:
+            errors.append(f"Row {i}: {e}")
+            continue
+        cid = _lr_insert_customer(db, ws, u, dict(c, opt_out="[]"))
+        added += 1
+        for gname in [g.strip() for g in (r.get("group") or r.get("groups") or "").split(";") if g.strip()]:
+            if gname.lower() not in groups:
+                groups[gname.lower()] = db.execute("INSERT INTO lr_groups (ws_id, name, color, created_at) "
+                                                   "VALUES (?,?,?,?)", (ws, gname[:60], "", _now())).lastrowid
+            db.execute("INSERT OR IGNORE INTO lr_group_members (group_id, customer_id) VALUES (?,?)",
+                       (groups[gname.lower()], cid))
+        if r.get("first_due") or r.get("plan"):
+            try:
+                _lr_create_loan(db, ws, u, cid, {"plan": r.get("plan") or "monthly", "amount": r.get("amount"),
+                                                 "principal": r.get("principal"), "annual_rate": r.get("rate"),
+                                                 "count": r.get("payments") or 1, "first_due": r.get("first_due"),
+                                                 "loan_ref": r.get("loan_ref")})
+                loans += 1
+            except Exception as e:  # noqa
+                errors.append(f"Row {i}: customer added, but the loan wasn't: {e}")
+    db.commit()
+    log_activity(db, u, "customers_imported", "workspace", ws, f"{added} customers, {loans} loans")
+    return jsonify({"ok": True, "added": added, "loans": loans, "errors": errors[:50]})
+
+
+@app.route("/api/loans/groups", methods=["GET", "POST"])
+def api_loans_groups():
+    u, db, ws = _lr_ctx()
+    if request.method == "POST":
+        d = request.get_json(force=True) or {}
+        name = (d.get("name") or "").strip()[:60]
+        if not name:
+            return jsonify({"error": "Name the group."}), 400
+        if db.execute("SELECT 1 FROM lr_groups WHERE ws_id=? AND lower(name)=lower(?)", (ws, name)).fetchone():
+            return jsonify({"error": "A group with that name already exists."}), 400
+        gid = db.execute("INSERT INTO lr_groups (ws_id, name, color, created_at) VALUES (?,?,?,?)",
+                         (ws, name, (d.get("color") or "")[:20], _now())).lastrowid
+        for cid in d.get("customer_ids") or []:
+            if str(cid).isdigit() and db.execute("SELECT 1 FROM lr_customers WHERE id=? AND ws_id=?",
+                                                 (int(cid), ws)).fetchone():
+                db.execute("INSERT OR IGNORE INTO lr_group_members (group_id, customer_id) VALUES (?,?)", (gid, int(cid)))
+        db.commit()
+        return jsonify({"ok": True, "id": gid})
+    rows = db.execute("SELECT g.*, (SELECT COUNT(*) FROM lr_group_members m WHERE m.group_id=g.id) n "
+                      "FROM lr_groups g WHERE g.ws_id=? ORDER BY lower(g.name)", (ws,)).fetchall()
+    return jsonify({"groups": [{"id": r["id"], "name": r["name"], "color": r["color"] or "", "count": r["n"]}
+                               for r in rows]})
+
+
+@app.route("/api/loans/groups/<int:gid>", methods=["PATCH", "DELETE"])
+def api_loans_group(gid):
+    u, db, ws = _lr_ctx()
+    _lr_own(db, "lr_groups", gid, ws)
+    if request.method == "DELETE":
+        db.execute("DELETE FROM lr_group_members WHERE group_id=?", (gid,))
+        db.execute("DELETE FROM lr_groups WHERE id=?", (gid,))
+        db.commit()
+        return jsonify({"ok": True})
+    d = request.get_json(force=True) or {}
+    if (d.get("name") or "").strip():
+        db.execute("UPDATE lr_groups SET name=? WHERE id=?", (d["name"].strip()[:60], gid))
+    if "color" in d:
+        db.execute("UPDATE lr_groups SET color=? WHERE id=?", ((d.get("color") or "")[:20], gid))
+    for cid in d.get("add") or []:
+        if str(cid).isdigit() and db.execute("SELECT 1 FROM lr_customers WHERE id=? AND ws_id=?",
+                                             (int(cid), ws)).fetchone():
+            db.execute("INSERT OR IGNORE INTO lr_group_members (group_id, customer_id) VALUES (?,?)", (gid, int(cid)))
+    for cid in d.get("remove") or []:
+        if str(cid).isdigit():
+            db.execute("DELETE FROM lr_group_members WHERE group_id=? AND customer_id=?", (gid, int(cid)))
+    db.commit()
+    return jsonify({"ok": True})
+
+
+# ---- API: loans and payments --------------------------------------------------------------- #
+def _lr_num(v, default=0.0):
+    if v in (None, ""):
+        return default
+    try:
+        return float(str(v).replace(",", "").replace("$", "").strip())
+    except Exception:
+        raise ValueError(f"\"{v}\" isn't a number.")
+
+
+def _lr_schedule(d):
+    return MSG.build_schedule(d.get("plan") or "monthly", principal=_lr_num(d.get("principal")),
+                              annual_rate=_lr_num(d.get("annual_rate")), count=int(_lr_num(d.get("count"), 1) or 1),
+                              first_due=d.get("first_due"),
+                              amount=None if d.get("amount") in (None, "") else _lr_num(d.get("amount")),
+                              custom=d.get("custom"))
+
+
+def _lr_create_loan(db, ws, u, cid, d):
+    sched = _lr_schedule(d)
+    lid = db.execute("INSERT INTO lr_loans (ws_id, customer_id, loan_ref, plan, principal, annual_rate, count, amount, "
+                     "first_due, status, notes, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?, 'active', ?,?,?)",
+                     (ws, cid, (d.get("loan_ref") or "").strip()[:60], d.get("plan") or "monthly",
+                      _lr_num(d.get("principal")), _lr_num(d.get("annual_rate")), len(sched), sched[0]["amount"],
+                      sched[0]["due_date"], (d.get("notes") or "").strip()[:1000], u["id"], _now())).lastrowid
+    for s in sched:
+        db.execute("INSERT INTO lr_installments (loan_id, ws_id, customer_id, seq, due_date, amount, kind, status) "
+                   "VALUES (?,?,?,?,?,?,?, 'due')", (lid, ws, cid, s["seq"], s["due_date"], s["amount"], s["kind"]))
+    return lid
+
+
+def _lr_loan_public(db, l):
+    insts = [dict(i) for i in db.execute("SELECT id, seq, due_date, amount, kind, status, paid_at, paid_amount "
+                                         "FROM lr_installments WHERE loan_id=? ORDER BY seq", (l["id"],)).fetchall()]
+    due = [i for i in insts if i["status"] == "due"]
+    return {"id": l["id"], "customer_id": l["customer_id"], "loan_ref": l["loan_ref"] or "", "plan": l["plan"],
+            "plan_label": dict(MSG.PLAN_TYPES).get(l["plan"], l["plan"]), "principal": l["principal"],
+            "annual_rate": l["annual_rate"], "status": l["status"], "notes": l["notes"] or "",
+            "installments": insts, "balance": round(sum(i["amount"] for i in due), 2),
+            "next_due": due[0]["due_date"] if due else "", "paid": len(insts) - len(due)}
+
+
+@app.route("/api/loans/schedule-preview", methods=["POST"])
+def api_loans_schedule_preview():
+    _lr_ctx()
+    d = request.get_json(force=True) or {}
+    try:
+        sched = _lr_schedule(d)
+    except Exception as e:  # noqa
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"schedule": sched, "total": round(sum(s["amount"] for s in sched), 2)})
+
+
+@app.route("/api/loans/loans", methods=["POST"])
+def api_loans_create():
+    u, db, ws = _lr_ctx()
+    d = request.get_json(force=True) or {}
+    try:
+        cid = int(d.get("customer_id") or 0)
+    except Exception:
+        cid = 0
+    _lr_own(db, "lr_customers", cid, ws)
+    try:
+        lid = _lr_create_loan(db, ws, u, cid, d)
+    except Exception as e:  # noqa
+        return jsonify({"error": str(e)}), 400
+    db.commit()
+    log_activity(db, u, "loan_added", "loan", lid, d.get("loan_ref") or "")
+    return jsonify({"ok": True, "id": lid})
+
+
+@app.route("/api/loans/loans/<int:lid>", methods=["PATCH", "DELETE"])
+def api_loans_loan(lid):
+    u, db, ws = _lr_ctx()
+    _lr_own(db, "lr_loans", lid, ws)
+    if request.method == "DELETE":
+        db.execute("DELETE FROM lr_installments WHERE loan_id=?", (lid,))
+        db.execute("DELETE FROM lr_loans WHERE id=?", (lid,))
+        db.commit()
+        return jsonify({"ok": True})
+    d = request.get_json(force=True) or {}
+    if d.get("status") in ("active", "closed"):
+        db.execute("UPDATE lr_loans SET status=? WHERE id=?", (d["status"], lid))
+    if "notes" in d:
+        db.execute("UPDATE lr_loans SET notes=? WHERE id=?", ((d.get("notes") or "")[:1000], lid))
+    if "loan_ref" in d:
+        db.execute("UPDATE lr_loans SET loan_ref=? WHERE id=?", ((d.get("loan_ref") or "")[:60], lid))
+    db.commit()
+    return jsonify({"ok": True, "loan": _lr_loan_public(db, _lr_own(db, "lr_loans", lid, ws))})
+
+
+@app.route("/api/loans/installments/<int:iid>", methods=["PATCH"])
+def api_loans_installment(iid):
+    u, db, ws = _lr_ctx()
+    i = _lr_own(db, "lr_installments", iid, ws)
+    d = request.get_json(force=True) or {}
+    try:
+        if d.get("status") == "paid":
+            db.execute("UPDATE lr_installments SET status='paid', paid_at=?, paid_amount=? WHERE id=?",
+                       ((d.get("paid_at") or _now())[:19], _lr_num(d.get("paid_amount"), i["amount"]), iid))
+        elif d.get("status") == "due":
+            db.execute("UPDATE lr_installments SET status='due', paid_at=NULL, paid_amount=NULL WHERE id=?", (iid,))
+        if d.get("due_date"):
+            datetime.strptime(d["due_date"][:10], "%Y-%m-%d")
+            db.execute("UPDATE lr_installments SET due_date=? WHERE id=?", (d["due_date"][:10], iid))
+        if d.get("amount") not in (None, ""):
+            db.execute("UPDATE lr_installments SET amount=? WHERE id=?", (_lr_num(d["amount"]), iid))
+    except ValueError as e:
+        return jsonify({"error": str(e) or "Use a valid date."}), 400
+    # a loan with nothing left to pay closes itself (and reopens if a payment is un-marked)
+    left = db.execute("SELECT COUNT(*) FROM lr_installments WHERE loan_id=? AND status='due'", (i["loan_id"],)).fetchone()[0]
+    db.execute("UPDATE lr_loans SET status=? WHERE id=?", ("active" if left else "closed", i["loan_id"]))
+    db.commit()
+    return jsonify({"ok": True})
+
+
+# ---- API: sending and the message log ------------------------------------------------------ #
+@app.route("/api/loans/send", methods=["POST"])
+def api_loans_send():
+    u, db, ws = _lr_ctx()
+    d = request.get_json(force=True) or {}
+    chans = [c for c in (d.get("channels") or []) if c in MSG.CHANNELS]
+    body = (d.get("body") or "").strip()
+    if not chans:
+        return jsonify({"error": "Pick at least one channel (SMS, WhatsApp or email)."}), 400
+    if not body:
+        return jsonify({"error": "Write the message."}), 400
+    missing = [MSG.CHANNEL_LABEL[c] for c in chans if not _lr_channel(db, ws, c).get("provider")]
+    if missing:
+        return jsonify({"error": f"{', '.join(missing)} isn't set up yet. Add it in Setup → Messaging channels."}), 400
+    rec = {"all": bool(d.get("all")), "group_ids": d.get("group_ids") or [], "customer_ids": d.get("customer_ids") or []}
+    n = len(_lr_campaign_recipients(db, ws, rec))
+    if not n:
+        return jsonify({"error": "No customers selected."}), 400
+    send_at = (d.get("send_at") or "").strip()[:19]
+    status = "scheduled" if send_at and send_at > datetime.utcnow().isoformat() else "queued"
+    cid = db.execute("INSERT INTO lr_campaigns (ws_id, name, channels, recipients, subject, body, status, send_at, total, "
+                     "created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                     (ws, (d.get("name") or body[:40]).strip()[:80], json.dumps(chans), json.dumps(rec),
+                      (d.get("subject") or "").strip()[:200], body[:2000], status, send_at or _now(),
+                      n * len(chans), u["id"], _now())).lastrowid
+    db.commit()
+    log_activity(db, u, "message_campaign", "campaign", cid, f"{n} customer(s) · {', '.join(chans)}")
+    if status == "queued":
+        threading.Thread(target=_lr_run_campaign, args=(cid,), daemon=True).start()
+    return jsonify({"ok": True, "id": cid, "customers": n, "status": status})
+
+
+@app.route("/api/loans/campaigns")
+def api_loans_campaigns():
+    u, db, ws = _lr_ctx()
+    rows = db.execute("SELECT * FROM lr_campaigns WHERE ws_id=? ORDER BY id DESC LIMIT 100", (ws,)).fetchall()
+    return jsonify({"campaigns": [{"id": r["id"], "name": r["name"], "channels": _jl(r["channels"], []),
+                                   "status": r["status"], "send_at": r["send_at"], "total": r["total"],
+                                   "sent": r["sent"], "failed": r["failed"], "body": r["body"],
+                                   "created_at": r["created_at"]} for r in rows]})
+
+
+@app.route("/api/loans/campaigns/<int:cid>", methods=["DELETE"])
+def api_loans_campaign_cancel(cid):
+    u, db, ws = _lr_ctx()
+    _lr_own(db, "lr_campaigns", cid, ws)
+    cur = db.execute("UPDATE lr_campaigns SET status='cancelled' WHERE id=? AND status='scheduled'", (cid,))
+    db.commit()
+    if cur.rowcount != 1:
+        return jsonify({"error": "Only scheduled messages that haven't gone out can be cancelled."}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/api/loans/messages")
+def api_loans_messages():
+    u, db, ws = _lr_ctx()
+    sql = "SELECT m.*, c.name FROM lr_messages m LEFT JOIN lr_customers c ON c.id=m.customer_id WHERE m.ws_id=?"
+    args = [ws]
+    if request.args.get("status") in ("sent", "failed", "skipped", "sending"):
+        sql += " AND m.status=?"
+        args.append(request.args["status"])
+    if request.args.get("channel") in MSG.CHANNELS:
+        sql += " AND m.channel=?"
+        args.append(request.args["channel"])
+    kind = request.args.get("kind") or ""
+    if kind == "auto":
+        sql += " AND m.installment_id IS NOT NULL"
+    elif kind == "manual":
+        sql += " AND m.campaign_id IS NOT NULL"
+    rows = db.execute(sql + " ORDER BY m.id DESC LIMIT 500", args).fetchall()
+    return jsonify({"messages": [{"id": r["id"], "customer_id": r["customer_id"], "name": r["name"] or "(deleted)",
+                                  "channel": r["channel"], "to": r["to_addr"] or "", "status": r["status"],
+                                  "error": r["error"] or "", "body": r["body"] or "", "subject": r["subject"] or "",
+                                  "kind": "auto" if r["installment_id"] else "manual", "rule": r["rule_key"] or "",
+                                  "created_at": r["created_at"], "sent_at": r["sent_at"] or ""} for r in rows]})
+
+
 def _scheduler_loop():
     last_sub_check = ""
-    last_stats = last_tokens = last_report = last_accounts = last_dms = 0
+    last_stats = last_tokens = last_report = last_accounts = last_dms = last_loans = 0
     while True:
         try:
             db = db_connect()
@@ -10111,6 +11051,10 @@ def _scheduler_loop():
         if t - last_dms > 600:
             last_dms = t
             threading.Thread(target=_sync_all_dms, daemon=True).start()
+        if t - last_loans > 300:                       # V38: due-date reminders + scheduled messages
+            last_loans = t
+            threading.Thread(target=_run_loan_reminders, daemon=True).start()
+            threading.Thread(target=_run_due_campaigns, daemon=True).start()
         time.sleep(30)
 
 

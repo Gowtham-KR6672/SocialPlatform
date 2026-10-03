@@ -69,7 +69,7 @@ async function renderSetup(){
           <div class="hint">Your public app address. Every platform's redirect URI is built from it.</div></div>
         <div><label class="f">Public Base URL (media)</label>
           <input class="f" id="sc-public" value="${esc(al.public_base_url||'')}" placeholder="https://your-app.com">
-          <div class="hint">${d.supabase_storage?'Supabase Storage is on, so media already has public URLs.':'Instagram and Threads download media from here (HTTPS only).'}</div></div>
+          <div class="hint">${d.supabase_storage?'Cloud storage (S3 or Supabase) is on, so media already has public URLs.':'Instagram and Threads download media from here (HTTPS only).'}</div></div>
       </div>
       <div class="sc-sub">${ic('sparkles',15)} <b>AI provider</b>
         <span class="muted">Used for captions, content writing, per-platform captions and reply suggestions.</span></div>
@@ -184,7 +184,9 @@ async function renderSetup(){
       <div class="hint">Turn this off once your clients are set up. You can still create accounts for them yourself.</div>
     </div>`;
   if(!$('#setupBody')) return;          // user left the page while it was loading
-  $('#setupBody').innerHTML = credCard + modeCard + lockNote + `<div class="pf-tiles">${rows}</div>` + alertsCard + signupCard;
+  const lrHost = ((App.user||{}).loans_enabled && !(App.user||{}).is_subuser) ? '<div id="lrChannels"></div>' : '';
+  $('#setupBody').innerHTML = credCard + modeCard + lockNote + `<div class="pf-tiles">${rows}</div>` + lrHost + alertsCard + signupCard;
+  if(lrHost && typeof renderLoanChannels==='function') renderLoanChannels($('#lrChannels'));
   const ms = $('#modeSave');
   if(ms) ms.onclick = async ()=>{
     const mode = (document.querySelector('#modeCard [name=wsmode]:checked')||{}).value;

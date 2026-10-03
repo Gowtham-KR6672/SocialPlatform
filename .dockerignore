@@ -1,0 +1,14 @@
+# keep secrets, local data and dev clutter out of the image
+.git
+.github
+.env
+.env.*
+!.env.example
+data/
+uploads/
+__pycache__/
+*.pyc
+*.db
+*.db.backup*
+deploy/
+Loginbg.png

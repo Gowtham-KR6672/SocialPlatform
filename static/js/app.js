@@ -92,6 +92,7 @@ const NAV_TABS = [
   {key:'library',  label:'Library',         ic:'folder',    group:'Workspace'},
   {key:'bio',      label:'Link in bio',     ic:'globe',     group:'Workspace'},
   {key:'reports',  label:'Reports',         ic:'fileText',      group:'Workspace'},
+  {key:'loans',    label:'Loan Reminders',  ic:'card',      group:'Workspace'},
   {key:'workspaces', label:'Workspaces',    ic:'building',  group:'Account'},
   {key:'team',     label:'Team & Brands',   ic:'users',     group:'Account'},
   {key:'activity', label:'Activity Log',    ic:'activity',  group:'Account'},
@@ -105,6 +106,7 @@ const ALWAYS_TABS = ['setup','team','activity','notifications'];
 function tabAllowed(key){
   const u = App.user || {};
   if(key==='workspaces') return !!u.is_super;
+  if(key==='loans' && !u.loans_enabled) return false;         // switched on per workspace by the SuperAdmin
   if(u.is_super || ALWAYS_TABS.includes(key)) return true;
   if(!u.is_subuser) return true;                              // Client Admin: whole workspace
   return (u.allowed_tabs || []).includes(key);
@@ -511,6 +513,7 @@ function renderDashboard(readonly=false){
   else if(App.page==='library') renderLibrary();
   else if(App.page==='workspaces') renderWorkspaces();
   else if(App.page==='bio') renderBio();
+  else if(App.page==='loans') renderLoans();
   else { App.page='input'; renderProduction(); }
   // reflect subscription state (read-only banner / renewal alert) on every page
   if(typeof applySubscriptionState==='function') applySubscriptionState();

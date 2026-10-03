@@ -1,0 +1,50 @@
+# Deploy to the AWS EC2 server on every push to main.
+# Uses GitHub's OIDC login to AWS (no stored AWS keys) and AWS Systems Manager to run
+# deploy/aws/deploy.sh on the server (no SSH port open).
+# Needs two repository variables (Settings → Secrets and variables → Actions → Variables):
+#   AWS_DEPLOY_ROLE_ARN  — IAM role GitHub may assume (created during the AWS setup)
+#   AWS_INSTANCE_ID      — the EC2 instance id, e.g. i-0123456789abcdef0
+# Until they are set, this workflow is skipped.
+name: Deploy to AWS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-aws
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: ${{ vars.AWS_DEPLOY_ROLE_ARN != '' && vars.AWS_INSTANCE_ID != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Run deploy.sh on the server
+        env:
+          INSTANCE: ${{ vars.AWS_INSTANCE_ID }}
+        run: |
+          CMD=$(aws ssm send-command --instance-ids "$INSTANCE" --document-name AWS-RunShellScript \
+                  --comment "deploy ${GITHUB_SHA::7}" --timeout-seconds 1200 \
+                  --parameters 'commands=["bash /opt/socialplatform/deploy/aws/deploy.sh"]' \
+                  --query Command.CommandId --output text)
+          echo "command: $CMD"
+          for i in $(seq 1 120); do
+            STATUS=$(aws ssm get-command-invocation --command-id "$CMD" --instance-id "$INSTANCE" \
+                       --query Status --output text 2>/dev/null || echo Pending)
+            case "$STATUS" in Pending|InProgress|Delayed) sleep 10;; *) break;; esac
+          done
+          aws ssm get-command-invocation --command-id "$CMD" --instance-id "$INSTANCE" \
+              --query '[StandardOutputContent,StandardErrorContent]' --output text
+          echo "status: $STATUS"
+          test "$STATUS" = "Success"

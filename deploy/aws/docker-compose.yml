@@ -1,0 +1,46 @@
+# SocialPlatform on one AWS EC2 server.
+#   app   — the Flask app (Dockerfile at the repo root), talks to RDS PostgreSQL + S3
+#   caddy — HTTPS for your domain (free Let's Encrypt certificate, renewed automatically)
+# Secrets live in /etc/socialplatform/app.env, written by deploy.sh from AWS SSM
+# Parameter Store — never in git. Run with:  bash deploy/aws/deploy.sh
+services:
+  app:
+    build:
+      context: ../..
+    image: socialplatform:latest
+    restart: unless-stopped
+    env_file: /etc/socialplatform/app.env
+    environment:
+      PORT: "5000"
+      BEHIND_PROXY: "1"
+    volumes:
+      - app_uploads:/app/uploads      # local cache of media (the originals are in S3)
+      - app_data:/app/data
+    expose:
+      - "5000"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [app]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in /etc/socialplatform/app.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data              # certificates — keep this volume
+      - caddy_config:/config
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  app_uploads: {}
+  app_data: {}
+  caddy_data: {}
+  caddy_config: {}
