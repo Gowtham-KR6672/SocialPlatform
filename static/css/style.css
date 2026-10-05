@@ -2320,14 +2320,14 @@ body.logged-out .topbar{display:none}
 
 /* 1 · connect */
 .s1{align-items:center;gap:1.4em}
-.s1-ring{position:relative;width:19em;height:19em;flex-shrink:0}
+.s1-ring{--R:7.6em;position:relative;width:19em;height:19em;flex-shrink:0}
 .s1-hub{position:absolute;left:50%;top:50%;width:4.6em;height:4.6em;margin:-2.3em;border-radius:50%;background:#fff;display:grid;place-items:center;z-index:2;
   box-shadow:0 .8em 2em rgba(58,40,160,.18),0 0 0 .5em rgba(108,76,247,.08);animation:cvPop .5s cubic-bezier(.3,1.5,.5,1) both,cvPulse 2.2s ease-in-out 1.6s infinite}
 .s1-hub img{width:3.3em;height:auto}
-.s1-line{position:absolute;left:50%;top:50%;width:7.6em;height:2px;margin-top:-1px;transform-origin:0 50%;transform:rotate(var(--a));
+.s1-line{position:absolute;left:50%;top:50%;width:var(--R);height:2px;margin-top:-1px;transform-origin:0 50%;transform:rotate(var(--a));
   background:linear-gradient(90deg,#b9a8ff,#ece6ff);animation:cvLine .5s ease var(--d) both}
 .s1-node{position:absolute;left:50%;top:50%;width:3.2em;height:3.2em;margin:-1.6em;z-index:2;
-  transform:rotate(var(--a)) translate(7.6em) rotate(calc(-1 * var(--a)))}
+  transform:rotate(var(--a)) translate(var(--R)) rotate(calc(-1 * var(--a)))}
 .s1-pop{position:relative;width:100%;height:100%;border-radius:50%;background:#fff;border:1px solid #ece8fb;display:grid;place-items:center;
   box-shadow:0 .5em 1.2em rgba(58,40,160,.14);animation:cvPop .5s cubic-bezier(.3,1.6,.5,1) var(--d) both}
 .s1-pop .pico{width:1.5em;height:1.5em}
@@ -2502,15 +2502,15 @@ body.logged-out .topbar{display:none}
 .cv[data-step="5"] .cv-cursor{animation:cur5 var(--dur) ease-in-out both}
 .cv[data-step="6"] .cv-cursor{animation:cur6 var(--dur) ease-in-out both}
 .cv[data-step="6"] .cv-cursor i{animation:clk6 var(--dur) both}
-@keyframes cur1{0%{left:72%;top:6%}6%{left:49%;top:37%}23%,31%{left:28.5%;top:79.5%}50%,100%{left:104%;top:96%}}
-@keyframes cur2{0%{left:62%;top:100%}15%,24%{left:86.8%;top:24.8%}42%,100%{left:104%;top:62%}}
+@keyframes cur1{0%{left:72%;top:6%}6%{left:var(--x1);top:var(--y1)}23%,31%{left:var(--x2);top:var(--y2)}50%,100%{left:104%;top:96%}}
+@keyframes cur2{0%{left:62%;top:100%}15%,24%{left:var(--x1);top:var(--y1)}42%,100%{left:104%;top:62%}}
 @keyframes clk2{0%,17%{opacity:0;transform:scale(.3)}18%{opacity:.9;transform:scale(.3)}27%,100%{opacity:0;transform:scale(1.9)}}
-@keyframes cur3{0%{left:84%;top:100%}12%,16%{left:69.7%;top:34.3%}40%,46%{left:40%;top:48.5%}62%,100%{left:104%;top:72%}}
+@keyframes cur3{0%{left:84%;top:100%}12%,16%{left:var(--x1);top:var(--y1)}40%,46%{left:var(--x2);top:var(--y2)}62%,100%{left:104%;top:72%}}
 @keyframes clk3{0%,13%{opacity:0;transform:scale(.3)}14%{opacity:.9;transform:scale(.3)}22%{opacity:0;transform:scale(1.9)}41%{opacity:0;transform:scale(.3)}42%{opacity:.9;transform:scale(.3)}50%,100%{opacity:0;transform:scale(1.9)}}
-@keyframes cur4{0%{left:68%;top:100%}12%,19%{left:72.5%;top:14.9%}36%,100%{left:104%;top:42%}}
+@keyframes cur4{0%{left:68%;top:100%}12%,19%{left:var(--x1);top:var(--y1)}36%,100%{left:104%;top:42%}}
 @keyframes clk4{0%,13%{opacity:0;transform:scale(.3)}14%{opacity:.9;transform:scale(.3)}23%,100%{opacity:0;transform:scale(1.9)}}
-@keyframes cur5{0%,36%{left:62%;top:104%}50%,100%{left:49.2%;top:66%}}
-@keyframes cur6{0%{left:50%;top:104%}22%,31%{left:26.6%;top:54.5%}50%,62%{left:62.3%;top:59.3%}78%,100%{left:104%;top:82%}}
+@keyframes cur5{0%,36%{left:62%;top:104%}50%,100%{left:var(--x1);top:var(--y1)}}
+@keyframes cur6{0%{left:50%;top:104%}22%,31%{left:var(--x1);top:var(--y1)}50%,62%{left:var(--x2);top:var(--y2)}78%,100%{left:104%;top:82%}}
 @keyframes clk6{0%,26%{opacity:0;transform:scale(.3)}27%{opacity:.9;transform:scale(.3)}35%{opacity:0;transform:scale(1.9)}56%{opacity:0;transform:scale(.3)}57%{opacity:.9;transform:scale(.3)}65%,100%{opacity:0;transform:scale(1.9)}}
 
 /* caption + controls + chapters */
@@ -2554,7 +2554,7 @@ body.logged-out .topbar{display:none}
 @keyframes s2File{from{opacity:0;transform:translate(8em,-10em) rotate(7deg) scale(.92)}55%{opacity:1}}
 @keyframes s3Word{from{opacity:0;transform:translateY(.35em);filter:blur(2px)}}
 @keyframes s4Hi{0%,36%{background:#f8f7fd;border-color:#f0edf9}42%,100%{background:#f3efff;border-color:#b9a8ff;box-shadow:0 0 0 .2em rgba(108,76,247,.12)}}
-@keyframes s4Fly{0%{opacity:0;transform:translate(11.8em,-4.3em) scale(1.05)}10%{opacity:1}82%{opacity:1;transform:translate(0,0) scale(.72)}100%{opacity:0;transform:translate(0,0) scale(.5)}}
+@keyframes s4Fly{0%{opacity:0;transform:translate(var(--fx,11.8em),var(--fy,-4.3em)) scale(1.05)}10%{opacity:1}82%{opacity:1;transform:translate(0,0) scale(.72)}100%{opacity:0;transform:translate(0,0) scale(.5)}}
 @keyframes s4Lift{0%,15%{opacity:1;transform:none}20%,100%{opacity:.5;transform:scale(.98)}}
 @keyframes s7In{from{opacity:0;transform:translateX(-1.2em)}}
 @keyframes s7Sel{0%,28%{border-color:transparent;background:#f8f7fd}33%,100%{border-color:#cfc3ff;background:#f3efff}}
@@ -2572,18 +2572,77 @@ body.logged-out .topbar{display:none}
   .lp{grid-template-columns:minmax(0,1fr) minmax(0,440px)}
   .lp-scene{display:none}
 }
-/* phones: one column — logo, small illustration, sign-in card */
+/* phones: brand on top, the concept video, and a "Sign in" button at the bottom.
+   "Sign in" swaps the video for the form (.lp.m-form), which slides up from the bottom. */
+.lp-mcta,.lp-tour{display:none}
 @media (max-width:760px){
-  .lp{grid-template-columns:minmax(0,1fr);justify-items:center;align-content:center;gap:4px;padding:22px 16px 28px}
+  .lp{display:flex;flex-direction:column;align-items:stretch;gap:14px;min-height:100vh;min-height:100dvh;
+    padding:calc(env(safe-area-inset-top) + 20px) 16px calc(env(safe-area-inset-bottom) + 18px)}
   .lp::before{right:-50vw;top:-20vh;width:120vw;height:70vh}
   .lp::after{right:-40vw;bottom:-30vh;width:130vw;height:60vh}
-  .lp-hero{align-self:auto;width:100%;align-items:center}
+  .lp-hero{align-self:stretch;width:100%;flex:none}
   .lp-copy{display:none}
-  .lp-scene{display:none}
-  .lp-hero{margin-bottom:14px}
-  .lp-card{justify-self:center;border-radius:22px;max-width:460px}
+  .lp-scene{display:flex;flex:1 1 auto;align-self:stretch;align-items:center;justify-content:center;min-height:0}
+  .lp-scene .cv{width:100%;max-width:520px}
+  .lp-mcta{display:block;flex:none;width:100%;max-width:520px;align-self:center}
+  .lp-card{display:none;align-self:center;border-radius:22px;max-width:460px;margin-top:auto}
   .lp-card-logo,.lp-card>.lp-name,.lp-card>.lp-tag{display:none}
   .lp-welcome{margin-top:0}
+  .lp.m-form .lp-scene,.lp.m-form .lp-mcta{display:none}
+  .lp.m-form .lp-card{display:block;animation:lpSheet .38s cubic-bezier(.2,.8,.2,1) both}
+  .lp-tour{display:inline-flex;align-items:center;gap:6px;margin:-4px 0 14px;padding:6px 12px 6px 9px;border:1px solid #e6e1f8;border-radius:99px;
+    background:#faf9ff;color:var(--lp-brand);font:inherit;font-size:13px;font-weight:700;cursor:pointer}
+  .lp-tour .ico{width:13px;height:13px}
+}
+@keyframes lpSheet{from{opacity:0;transform:translateY(40px)}}
+@media (max-width:760px) and (prefers-reduced-motion:reduce){ .lp.m-form .lp-card{animation:none} }
+
+/* the concept video on phones (portrait player): each scene's parts stack, sizes follow the player width */
+@media (max-width:760px){
+  .cv>*{font-size:3.9cqi}
+  .cv>.cv-cap{font-size:3.6cqi}
+  .cv>.cv-tl{font-size:3.3cqi}
+  .cv-seg-l{font-size:.82em}
+  .cv-cap{margin-top:.9em}
+  .cv-cap-txt{min-height:5.6em}
+  .cv-scr{height:30em}
+  .cv-sc{flex-direction:column;align-items:stretch;justify-content:center;gap:.9em;padding:1.2em}
+  /* 1 · connect */
+  .s1{align-items:center}
+  .s1-ring{--R:5.5em;width:14.4em;height:14.4em}
+  .s1-node{width:2.7em;height:2.7em;margin:-1.35em}
+  .s1-pop .pico{width:1.3em;height:1.3em}
+  .s1-hub{width:3.8em;height:3.8em;margin:-1.9em} .s1-hub img{width:2.8em}
+  .s1-txt{width:100%;display:flex;flex-direction:column;align-items:center;text-align:center}
+  .s1-n{font-size:2.5em} .s1-l{margin:.2em 0 .7em}
+  .cv-list{width:100%}
+  /* 2 · upload */
+  .s2-drop{flex:none;height:13.5em;padding-bottom:5.2em}
+  .s2-side{flex:none}
+  /* 3 · write with AI */
+  .s3-post{width:auto;flex-direction:row;align-items:center;gap:.7em;padding:.5em .6em}
+  .s3-post .cv-thumb.big{width:3em;height:3em;margin:0}
+  .s3-post .cv-thumb.big .cv-play{width:1.4em;height:1.4em}
+  .s3-post small{margin-left:auto}
+  /* 4 · schedule */
+  .s4-cal{width:100%}
+  .s4-day{height:3.3em}
+  .s4-q{display:none}
+  /* 5 · publish */
+  .s5{justify-content:flex-start}
+  .s5-main{width:100%;box-sizing:border-box}
+  .s5-toast{left:1.2em;right:1.2em}
+  /* 6 · analyze */
+  .s6-row{grid-template-columns:minmax(0,1fr)}
+  .s6-kpis{gap:.5em}
+  .s6-k{padding:.6em .65em}
+  .s6-k small{font-size:.5em;letter-spacing:.03em}
+  .s6-k>b{font-size:1.15em}
+  .s6-bars{height:5.6em}
+  .s6-pl{margin-top:.45em}
+  .s6-pdf{margin-top:.6em}
+  /* 7 · engage */
+  .s7-inbox,.s7-reply{flex:none}
 }
 @media (max-width:380px){ .lp-brand img{width:60px} .lp-brand .lp-name{font-size:22px} .lp-row{font-size:13px} }
 

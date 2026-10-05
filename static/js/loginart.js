@@ -194,6 +194,37 @@
     el._run = startAt; requestAnimationFrame(tick);
   }
 
+  /* The pointer's stops are measured from the scene's real layout (wide or phone), so its clicks
+     land on the controls at any size. Each stop: [selector, x share, y share, start offset x/y in em]. */
+  const AIM = {
+    1: [['.s2-file', .3, .5, 8, -10], ['.s2-file', .3, .5]],      // drag the file in
+    2: [['.s3-gen']],                                              // Generate
+    3: [['.s4-card .cv-thumb'], ['.s4-day.tgt']],                  // drag the post onto Friday
+    4: [['.s5-btn']],                                              // Publish now
+    5: [['.s6-bars i:nth-last-child(2)', .5, .3]],                 // hover the best day
+    6: [['.s7-c.sel'], ['.s7-send']],                              // open the comment, send the reply
+  };
+  // position inside the player screen from offsets (ignores the entrance transforms still running)
+  const posIn = (el, scr) => { let x = 0, y = 0;
+    for(let n = el; n && n !== scr; n = n.offsetParent){ x += n.offsetLeft; y += n.offsetTop; }
+    return {x, y, w: el.offsetWidth, h: el.offsetHeight}; };
+  function aim(root, step){
+    const scr = root.querySelector('.cv-scr'), sc = root.querySelector('.cv-sc.on'), cur = root.querySelector('.cv-cursor');
+    if(!scr || !sc || !cur) return;
+    const em = parseFloat(getComputedStyle(scr).fontSize) || 16;
+    const tipX = cur.offsetWidth * 5 / 24, tipY = cur.offsetHeight * 3 / 24;   // the arrow's tip inside its box
+    (AIM[step] || []).forEach(([q, fx = .5, fy = .5, ox = 0, oy = 0], i) => {
+      const el = sc.querySelector(q); if(!el) return;
+      const r = posIn(el, scr);
+      cur.style.setProperty('--x' + (i + 1), (r.x + r.w * fx + ox * em - tipX) + 'px');
+      cur.style.setProperty('--y' + (i + 1), (r.y + r.h * fy + oy * em - tipY) + 'px');
+    });
+    // the dragged post flies from the card's thumbnail to Friday
+    const fly = sc.querySelector('.s4-fly'), th = sc.querySelector('.s4-card .cv-thumb');
+    if(fly && th){ const a = posIn(th, scr), b = posIn(fly, scr);
+      fly.style.setProperty('--fx', (a.x - b.x) + 'px'); fly.style.setProperty('--fy', (a.y - b.y) + 'px'); }
+  }
+
   function initConceptVideo(){
     const root = document.querySelector('.cv:not([data-ready])'); if(!root) return;
     root.dataset.ready = '1';
@@ -211,6 +242,7 @@
       segs.forEach((s, j) => { s.classList.remove('on'); s.classList.toggle('done', j < cur); s.setAttribute('aria-selected', String(j === cur)); });
       void root.offsetWidth;
       scenes[cur].classList.add('on'); segs[cur].classList.add('on');
+      aim(root, cur);
       root.classList.remove('swap'); void root.offsetWidth; root.classList.add('swap');
       capN.textContent = 'Step ' + (cur + 1); capT.textContent = STEPS[cur].t; capD.textContent = STEPS[cur].d;
       count.textContent = (cur + 1) + ' / ' + STEPS.length;
@@ -233,6 +265,7 @@
     if(still) setPaused(true);
     show(0);
     cap.addEventListener('animationend', () => root.classList.remove('swap'));
+    let rz; window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => root.isConnected && aim(root, cur), 120); });
   }
   window.initConceptVideo = initConceptVideo;
 })();

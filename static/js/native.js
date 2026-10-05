@@ -58,6 +58,7 @@
       if(typeof window.closeMobileNav === 'function' && window.closeMobileNav()) return;   // phone menu sheet
       const root = document.getElementById('modal-root');
       if(root && root.children.length && typeof window.closeModal === 'function'){ window.closeModal(); return; }
+      if(typeof window.lpShowTour === 'function' && window.lpShowTour()) return;   // login form → back to the video
       if(window.App && App.user && App.page && App.page !== 'input' && typeof window.renderDashboard === 'function'){
         App.page = 'input'; window.renderDashboard(); return;
       }

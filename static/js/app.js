@@ -286,6 +286,7 @@ function renderLanding(){
 
       <div class="lp-scene" role="region" aria-label="How Social Platform works">${typeof loginScene==='function' ? loginScene() : ''}</div>
       <section class="lp-card" aria-label="Sign in">
+        <button type="button" class="lp-tour" id="lpTour">${ic('play',13)} Watch how it works</button>
         <img class="lp-card-logo" src="/static/img/logo.png" alt="Social Platform logo" width="512" height="377">
         <div class="lp-name">Social <span>Platform</span></div>
         <div class="lp-tag">Plan, produce &amp; schedule your social content.</div>
@@ -305,6 +306,8 @@ function renderLanding(){
         <div class="err" id="lg-err" role="alert"></div>
         <button class="lp-go" id="lg-go">Log In ${ic('arrowRight',18)}</button>
       </section>
+      <!-- phones: the concept video first, then this button swaps it for the sign-in form -->
+      <div class="lp-mcta"><button type="button" class="lp-go" id="lpSignIn">Sign in ${ic('arrowRight',18)}</button></div>
     </div>`;
 
   // ---- login (single page) ----
@@ -330,6 +333,16 @@ function renderLanding(){
   };
 
   $('#lnkForgot').onclick = (e)=>{ e.preventDefault(); openForgot(); };
+  // phones: "Sign in" hides the video and shows the form; "Watch how it works" (or Android back) goes back
+  const lpView = form=>{
+    const lp = $('.lp'); if(!lp) return;
+    lp.classList.toggle('m-form', form);
+    if(form) setTimeout(()=>{ const u=$('#lg-user'); if(u) u.focus(); }, 80);
+    else if(typeof initConceptVideo==='function') setTimeout(()=>window.dispatchEvent(new Event('resize')), 30);
+  };
+  $('#lpSignIn').onclick = ()=>lpView(true);
+  $('#lpTour').onclick = ()=>lpView(false);
+  window.lpShowTour = ()=>{ const lp=$('.lp.m-form'); if(!lp) return false; lpView(false); return true; };
 
 
   setTimeout(()=>{ const u=$('#lg-user'); if(u) u.focus(); }, 120);
