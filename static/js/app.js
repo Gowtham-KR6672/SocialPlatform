@@ -284,7 +284,7 @@ function renderLanding(){
         </div>
       </section>
 
-      <div class="lp-scene" aria-hidden="true">${typeof loginScene==='function' ? loginScene() : ''}</div>
+      <div class="lp-scene" role="region" aria-label="How Social Platform works">${typeof loginScene==='function' ? loginScene() : ''}</div>
       <section class="lp-card" aria-label="Sign in">
         <img class="lp-card-logo" src="/static/img/logo.png" alt="Social Platform logo" width="512" height="377">
         <div class="lp-name">Social <span>Platform</span></div>
