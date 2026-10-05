@@ -33,7 +33,7 @@ function hbarChart(host, rows, opts){
   // rows: [{label, icon, value, display, tip}] — horizontal comparison bars
   const max = Math.max(1, ...rows.map(r=>r.value));
   host.innerHTML = `<div class="hbars">${rows.map((r,i)=>`<div class="hb-row viz-hit" data-i="${i}">
-      <div class="hb-lab">${r.icon||''} ${esc(r.label)}</div>
+      <div class="hb-lab" title="${esc(r.label)}">${r.icon||''} <span class="hb-name">${esc(r.label)}</span></div>
       <div class="hb-track"><div class="hb-bar" style="width:${Math.max(r.value?1.5:0, 100*r.value/max)}%;background:${opts.color||'var(--viz-1)'}"></div></div>
       <div class="hb-val">${esc(r.display!=null?r.display:fmtN(r.value))}</div></div>`).join('')}</div><div class="viz-tip hidden"></div>`;
   bindTips(host, rows);
@@ -112,8 +112,8 @@ async function renderAnalytics(){
       <div class="card glass viz-card"><h4>Views by publish date</h4><div class="viz" id="vzViews"></div></div>
       <div class="card glass viz-card"><h4>Engagements by publish date <span class="muted">(likes + comments + shares)</span></h4><div class="viz" id="vzEng"></div></div>
     </div>
-    <div class="card glass viz-card"><h4>Platform comparison
-        <span class="seg sm" id="anMetric" style="margin-left:auto">${[['views','Views'],['engagement','Engagements'],['engagement_rate','Engagement rate'],['posts','Posts']].map(([k,l])=>
+    <div class="card glass viz-card"><h4 class="pc-head">Platform comparison
+        <span class="seg sm pc-seg" id="anMetric">${[['views','Views'],['engagement','Engagements'],['engagement_rate','Engagement rate'],['posts','Posts']].map(([k,l])=>
           `<button data-k="${k}" class="${App._an.metric===k?'on':''}">${l}</button>`).join('')}</span></h4>
       <div class="viz" id="vzPlat"></div>
       <details class="tbl-toggle"><summary>${ic('list',13)} Show as table</summary>
@@ -265,9 +265,13 @@ async function renderQueue(){
   // best times
   try{
     const bt = (await api(`/api/schedule/best-times?tz=${encodeURIComponent(userTz())}&offset=${tzOffset()}`)).best;
-    $('#qBest').innerHTML = `<table class="rep-table"><thead><tr><th>Platform</th><th>Suggested slots</th><th>Based on</th></tr></thead><tbody>${PLAT_ORDER.map(p=>
-      `<tr><td>${pi(p,14)} ${platLabel(p)}</td><td>${(bt[p]||[]).map(x=>`<span class="bt-chip static">${DOW_MON[x.dow]} ${String(x.hour).padStart(2,'0')}:00</span>`).join(' ')}</td>
-       <td class="muted">${(bt[p]||[{}])[0].source||''}</td></tr>`).join('')}</tbody></table>
+    // one row per platform: name + "based on" on the left, slot chips on the right;
+    // in a narrow card the chips drop under the name (see .bt-list in style.css)
+    $('#qBest').innerHTML = `<div class="bt-list">${PLAT_ORDER.map(p=>`<div class="bt-row">
+        <div class="bt-plat">${pi(p,16)} <b>${platLabel(p)}</b></div>
+        <div class="bt-src muted">${esc((bt[p]||[{}])[0].source||'')}</div>
+        <div class="bt-slots">${(bt[p]||[]).map(x=>`<span class="bt-chip static">${DOW_MON[x.dow]} ${String(x.hour).padStart(2,'0')}:00</span>`).join('')}</div>
+      </div>`).join('')}</div>
       <div class="hint">Suggestions switch to your own engagement data once a platform has 5+ real published posts.</div>`;
   }catch(e){ $('#qBest').innerHTML=''; }
   // upcoming
@@ -406,14 +410,36 @@ async function renderActivity(){
   };
   loadActivity();
 }
+/* Phone layout of the log: entries grouped under a day heading, one card each —
+   who + time on top, the action chip and detail below (the table is hidden on small screens) */
+function actCards(rows){
+  const day = d=>d.toLocaleDateString(undefined,{weekday:'short', day:'numeric', month:'short', year:'numeric'});
+  const today = day(new Date()), yest = day(new Date(Date.now()-864e5));
+  let last = '', html = '';
+  rows.forEach(a=>{
+    const d = new Date(a.created_at+'Z'), ok = !isNaN(d);
+    const k = ok ? day(d) : '';
+    if(k !== last){ last = k; html += `<div class="ac-day">${k===today?'Today':k===yest?'Yesterday':esc(k)}</div>`; }
+    const who = a.username || 'system';
+    html += `<div class="ac-card">
+      <span class="ac-av" aria-hidden="true">${esc(who.slice(0,1).toUpperCase())}</span>
+      <div class="ac-main">
+        <div class="ac-top"><b>${esc(who)}</b><span class="ac-time">${ok?d.toLocaleTimeString(undefined,{hour:'numeric', minute:'2-digit'}):esc(a.created_at||'')}</span></div>
+        <span class="act-chip act-${esc(a.action)}">${esc(ACTION_LABEL[a.action]||a.action)}</span>
+        ${a.detail||(a.target_type==='item'&&a.target_id)?`<div class="ac-detail">${esc(a.detail||'')}${a.target_type==='item'&&a.target_id?` <a href="#" data-item="${a.target_id}">${ic('external',12)} Open</a>`:''}</div>`:''}
+      </div></div>`;
+  });
+  return `<div class="ac-list">${html}</div>`;
+}
 async function loadActivity(){
   const qs = new URLSearchParams(Object.entries(App._act).filter(([k,v])=>v)).toString();
   let d; try{ d = await api('/api/activity'+(qs?'?'+qs:'')); }catch(e){ $('#acBody').innerHTML=`<div class="err">${esc(e.message)}</div>`; return; }
   App._actRows = d.activity;
-  $('#acBody').innerHTML = d.activity.length ? `<div class="rep-table-wrap"><table class="rep-table"><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Detail</th></tr></thead>
+  $('#acBody').innerHTML = d.activity.length ? `<div class="rep-table-wrap ac-table"><table class="rep-table"><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Detail</th></tr></thead>
     <tbody>${d.activity.map(a=>`<tr><td class="muted" style="white-space:nowrap">${fmtTime(a.created_at)}</td><td>${esc(a.username||'system')}</td>
       <td><span class="act-chip act-${esc(a.action)}">${esc(ACTION_LABEL[a.action]||a.action)}</span></td>
-      <td>${esc(a.detail||'')}${a.target_type==='item'&&a.target_id?` <a href="#" data-item="${a.target_id}">${ic('external',12)}</a>`:''}</td></tr>`).join('')}</tbody></table></div>`
+      <td>${esc(a.detail||'')}${a.target_type==='item'&&a.target_id?` <a href="#" data-item="${a.target_id}">${ic('external',12)}</a>`:''}</td></tr>`).join('')}</tbody></table></div>
+    ${actCards(d.activity)}`
     : '<div class="empty">No activity yet.</div>';
   $('#acBody').querySelectorAll('[data-item]').forEach(a=>a.onclick=e=>{ e.preventDefault(); openLinkTarget('calendar:'+a.dataset.item); });
 }

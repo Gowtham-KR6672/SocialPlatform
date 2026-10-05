@@ -28,6 +28,16 @@ function applyTheme(){
 // apply immediately so there's no flash of the wrong theme
 applyTheme();
 try{ App.sidebarCollapsed = localStorage.getItem('pmSidebar')==='1'; }catch(e){}
+// phones: the menu button in the top bar shows / hides the icon rail (remembered per device)
+try{ App.mobileNavHidden = localStorage.getItem('pmSidebarMobile')==='1'; }catch(e){}
+document.body.classList.toggle('mnav-hidden', !!App.mobileNavHidden);
+function toggleMobileNav(){
+  App.mobileNavHidden = !App.mobileNavHidden;
+  document.body.classList.toggle('mnav-hidden', App.mobileNavHidden);
+  const b = $('#navToggle');
+  if(b){ b.setAttribute('aria-expanded', String(!App.mobileNavHidden)); b.title = (App.mobileNavHidden?'Show':'Hide')+' menu'; }
+  try{ localStorage.setItem('pmSidebarMobile', App.mobileNavHidden?'1':'0'); }catch(e){}
+}
 
 function openThemePicker(anchor){
   const ex = document.querySelector('#theme-pop'); if(ex){ ex.remove(); return; }
@@ -151,6 +161,14 @@ function renderTopbar(){
   box.innerHTML='';
   const brand = $('#brand'); if(brand) brand.style.display = App.user ? '' : 'none';
   document.body.classList.toggle('logged-out', !App.user);
+  let nt = $('#navToggle');
+  if(!nt && brand){
+    nt = el(`<button class="icon-btn nav-toggle" id="navToggle" type="button" aria-controls="sidepanel">${ic('menu',20)}</button>`);
+    brand.parentNode.insertBefore(nt, brand);
+    nt.onclick = toggleMobileNav;
+  }
+  if(nt){ nt.hidden = !App.user; nt.setAttribute('aria-expanded', String(!App.mobileNavHidden));
+    nt.title = (App.mobileNavHidden?'Show':'Hide')+' menu'; }
   // Clean top bar — theme is fixed; the user stats strip, Tasks, Setup/Install,
   // Notifications and Chatbot have all been removed for a minimal, premium look.
   if(App.user){
@@ -251,6 +269,7 @@ const COSMIC_CUBE2_SVG = _CUBE('c-cube2', 0.6);
 function renderLanding(){
   $('#readonly-banner').classList.add('hidden');
   const brand = $('#brand'); if(brand) brand.style.display='none';   // no top-left brand on login
+  const nt = $('#navToggle'); if(nt) nt.hidden = true;
   document.body.classList.add('logged-out');
   const v = $('#view');
   const brandHTML = (cls)=>`<div class="lp-brand ${cls}">

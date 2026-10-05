@@ -14,3 +14,16 @@ venv/
 
 # Local env
 .env
+
+# mobile app build output (sources are committed)
+mobile/node_modules/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/local.properties
+mobile/android/capacitor-cordova-android-plugins/build/
+mobile/ios/App/build/
+mobile/ios/DerivedData/
+*.keystore
+*.jks
+mobile/dist/

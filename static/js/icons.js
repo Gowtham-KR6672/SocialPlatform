@@ -80,6 +80,7 @@ const ICON_PATHS = {
   arrowRight:'<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
   eyeOff:'<path d="M9.9 4.24A9.1 9.1 0 0 1 12 4c7 0 10 8 10 8a13.2 13.2 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.5 13.5 0 0 0 2 12s3 8 10 8a9.7 9.7 0 0 0 5.39-1.61"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="m2 2 20 20"/>',
   arrowDown:'<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
+  menu:'<path d="M4 6h16M4 12h16M4 18h16"/>',
 };
 
 function ic(name, size, cls){

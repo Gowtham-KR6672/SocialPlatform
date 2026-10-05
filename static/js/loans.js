@@ -585,9 +585,13 @@ async function renderLoanChannels(host){
 }
 window.renderLoanChannels = renderLoanChannels;
 
+// most common provider first (the server's JSON comes back alphabetically sorted)
+const LR_PROV_ORDER = {sms:['twilio','telnyx','plivo','vonage','custom'], whatsapp:['meta','twilio'], email:['smtp','sendgrid']};
 function lrChannelModal(k, d, after){
-  const cur = d.channels[k]||{}, provs = d.providers[k];
-  const first = cur.provider || Object.keys(provs)[0];
+  const cur = d.channels[k]||{}, raw = d.providers[k];
+  const order = (LR_PROV_ORDER[k]||[]).filter(x=>raw[x]).concat(Object.keys(raw).filter(x=>!(LR_PROV_ORDER[k]||[]).includes(x)));
+  const provs = Object.fromEntries(order.map(x=>[x, raw[x]]));
+  const first = cur.provider || order[0];
   const m = el(`<div class="modal" style="max-width:560px"><div class="modal-head"><h3>${ic(LR_CH_IC[k],18)} ${LR_CH[k]} provider</h3>
       <button class="x" onclick="closeModal()" aria-label="Close">${ic('x',18)}</button></div>
     <div class="modal-body"><label class="f" for="cp-p">Provider</label>

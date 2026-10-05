@@ -44,13 +44,14 @@ async function loadPublished(){
   }
 }
 
+const PT_STATUS = {failed:'Failed', skipped:'Skipped', retrying:'Retrying', pending:'Queued', publishing:'Publishing', new:'Ready'};
 function pubCard(it){
   const targets = (it.targets||[]);
   const rows = targets.map(t=>`<div class="pt-row tc-${t.status}">
       <span class="pt-plat">${pi(t.platform,16)} ${esc(platLabel(t.platform))}</span>
       <span class="pt-stat">${t.status==='published'
         ? `${ic('eye',12)} ${fmtK(t.views)} &nbsp;${ic('heart',12)} ${fmtK(t.likes)} &nbsp;${ic('message',12)} ${fmtK(t.comments)} &nbsp;${ic('share',12)} ${fmtK(t.shares)}`
-        : `<span class="pf-err">${ic('alert',12)} ${esc(t.status)}${t.error?': '+esc(t.error):''}</span>`}</span>
+        : `<span class="pf-err">${ic('alert',12)} <span>${esc(PT_STATUS[t.status]||t.status)}${t.error?' — '+esc(t.error):''}</span></span>`}</span>
       <span class="pt-act">${t.simulated?'<span class="tc-sim" title="Simulated — connect a live account">sim</span>':''}
         ${t.permalink?`<a class="btn ghost xs" href="${esc(t.permalink)}" target="_blank" rel="noopener">${ic('external',12)} Open</a>`:''}
         ${t.status==='failed'?`<button class="btn ghost xs" data-retry="${t.id}">${ic('refresh',12)} Retry</button>`:''}</span>

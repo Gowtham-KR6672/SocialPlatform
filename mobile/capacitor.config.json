@@ -1,0 +1,36 @@
+{
+  "appId": "com.socialplatform.app",
+  "appName": "Social Platform",
+  "webDir": "www",
+  "server": {
+    "url": "https://socialplatform-1hab.onrender.com",
+    "cleartext": false,
+    "errorPath": "offline.html"
+  },
+  "appendUserAgent": "SocialPlatformApp",
+  "backgroundColor": "#f7f5fe",
+  "android": {
+    "path": "android",
+    "allowMixedContent": false,
+    "captureInput": true
+  },
+  "ios": {
+    "path": "ios",
+    "contentInset": "always",
+    "scheme": "Social Platform"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1500,
+      "launchAutoHide": true,
+      "backgroundColor": "#f7f5fe",
+      "showSpinner": false,
+      "androidScaleType": "CENTER_INSIDE"
+    },
+    "StatusBar": {
+      "style": "LIGHT",
+      "backgroundColor": "#f7f5fe",
+      "overlaysWebView": false
+    }
+  }
+}

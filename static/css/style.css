@@ -2478,3 +2478,75 @@ body.logged-out .topbar{display:none}
 }
 .lr-sect{display:flex;align-items:center;gap:8px}
 .lr-sect .spacer{flex:1}
+/* ============================================================
+   Phone layout fixes (Android / iOS app and small browsers)
+   ============================================================ */
+/* Menu button: top-left on phones, shows / hides the icon rail */
+.nav-toggle{display:none}
+.nav-toggle[hidden]{display:none !important}
+@media(max-width:700px){
+  .nav-toggle{display:inline-flex;flex-shrink:0}
+  body[data-theme="cosmic"] .topbar .nav-toggle{width:36px;height:36px;margin-left:-6px}
+  body[data-theme="cosmic"] .topbar{gap:6px}
+  body[data-theme="cosmic"] .topbar .brand-logo{height:28px;width:auto}
+  body[data-theme="cosmic"] #topbar-actions{gap:6px !important}
+  body.mnav-hidden #sidepanel{display:none !important}
+  .nav-toggle[aria-expanded="true"]{background:var(--brand-soft);color:var(--brand-dark)}
+}
+@media(max-width:390px){ body[data-theme="cosmic"] .topbar .logo-txt{display:none} }
+/* Calendar → Publishing status: room between the platform icons and the progress bar */
+.ps-plats{flex-wrap:wrap;gap:6px;margin:6px 0 12px}
+/* Queue → Best times to post: a list instead of a 3-column table */
+.bt-list{container-type:inline-size;display:flex;flex-direction:column}
+.bt-row{display:grid;grid-template-columns:minmax(120px,170px) minmax(0,1fr) auto;grid-template-areas:"plat slots src";
+  align-items:center;gap:6px 14px;padding:11px 2px;border-bottom:1px solid var(--line)}
+.bt-row:last-child{border-bottom:none}
+.bt-plat{grid-area:plat;display:flex;align-items:center;gap:8px;font-size:13px;min-width:0}
+.bt-src{grid-area:src;font-size:11.5px;white-space:nowrap}
+.bt-slots{grid-area:slots;display:flex;flex-wrap:wrap;gap:6px}
+@container (max-width: 520px){
+  .bt-row{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"plat src" "slots slots";padding:12px 2px}
+}
+/* Published → per-platform rows: name left, Open / Retry right, stats or the error underneath */
+.pt-row .pf-err{align-items:flex-start;margin-top:0;line-height:1.45}
+.pt-row .pf-err > .ico{flex-shrink:0;margin-top:2px}
+.pt-row.tc-skipped{text-decoration:none}
+.pt-row.tc-skipped .pt-plat{text-decoration:line-through;text-decoration-color:var(--muted-2)}
+.pt-row.tc-skipped .pf-err{color:var(--muted)}
+@media(max-width:760px){
+  .pt-row{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"plat act" "stat stat";
+    align-items:center;gap:8px 10px;padding:10px 12px}
+  .pt-row .pt-plat{grid-area:plat;min-width:0}
+  .pt-row .pt-act{grid-area:act;justify-self:end}
+  .pt-row .pt-act:empty{display:none}
+  .pt-row .pt-stat{grid-area:stat;flex-wrap:wrap;row-gap:4px}
+}
+/* Analytics → Platform comparison: the metric switch moves under the title on narrow cards */
+#pageContent .card h4.pc-head{flex-wrap:wrap;row-gap:10px}
+.pc-seg{margin-left:auto}
+.hb-lab{min-width:0;overflow:hidden}
+.hb-name{min-width:0;overflow:hidden;text-overflow:ellipsis}
+@media(max-width:700px){
+  .pc-seg{margin-left:0;width:100%;display:grid !important;grid-template-columns:repeat(2,minmax(0,1fr))}
+  .pc-seg button{text-align:center;white-space:nowrap;padding:8px 6px !important}
+}
+/* Activity log → cards grouped by day on phones; the table stays on larger screens */
+.ac-list{display:none}
+@media(max-width:700px){
+  .ac-table{display:none}
+  .ac-list{display:flex;flex-direction:column;gap:8px}
+  .ac-day{font-size:11.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:10px 2px 2px}
+  .ac-day:first-child{margin-top:0}
+  .ac-card{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;background:var(--card);border:1px solid var(--line);
+    border-radius:14px;box-shadow:0 1px 2px rgba(20,20,60,.04)}
+  .ac-av{flex-shrink:0;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;font-weight:800;font-size:13px;
+    background:var(--brand-soft);color:var(--brand-dark)}
+  .ac-main{flex:1;min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:6px}
+  .ac-top{width:100%;display:flex;align-items:baseline;justify-content:space-between;gap:10px;font-size:13.5px}
+  .ac-top b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ac-time{flex-shrink:0;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .ac-detail{font-size:12.5px;color:var(--ink-2);line-height:1.45;overflow-wrap:anywhere}
+  .ac-detail a{display:inline-flex;align-items:center;gap:3px;font-weight:700;white-space:nowrap}
+  .hero-head .ph-actions #acQ,#acQ{flex:1 1 100%;max-width:none;width:100%}
+  .hero-head .ph-actions #acA,#acA{flex:1 1 0;min-width:0;max-width:none}
+}
