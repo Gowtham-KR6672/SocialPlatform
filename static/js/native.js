@@ -17,9 +17,11 @@
   // ---- no zoom ----------------------------------------------------------------
   // iOS zooms in when a text box under 16px is tapped (the sign-in fields) and never
   // zooms back out, so every screen after that is a little too wide and slides sideways.
-  // viewport-fit=cover lets the page read the home-bar height, so the phone menu sits above it.
+  // iOS: viewport-fit=cover lets the page read the home-bar height, so the phone menu sits above it.
+  // Android pads the app around its status and navigation bars itself — cover would turn that off.
+  const fit = C.getPlatform() === 'ios' ? ', viewport-fit=cover' : '';
   const vp = document.querySelector('meta[name="viewport"]');
-  if(vp) vp.setAttribute('content', 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover');
+  if(vp) vp.setAttribute('content', 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no' + fit);
 
   // ---- sign-in popups → system browser tab ----------------------------------
   // The site opens sign-in with window.open(url) and waits for the window to close.
