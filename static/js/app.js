@@ -342,6 +342,13 @@ function renderLanding(){
   };
   $('#lpSignIn').onclick = ()=>lpView(true);
   $('#lpTour').onclick = ()=>lpView(false);
+  // phones: tapping anywhere outside the form closes it, like a bottom sheet
+  $('.lp').addEventListener('click', e=>{
+    const lp = e.currentTarget;
+    if(!lp.classList.contains('m-form') || e.target.closest('.lp-card, .lp-mcta')) return;   // .lp-mcta: the tap that opened it
+    if(window.matchMedia && !matchMedia('(max-width:760px)').matches) return;
+    lpView(false);
+  });
   window.lpShowTour = ()=>{ const lp=$('.lp.m-form'); if(!lp) return false; lpView(false); return true; };
 
 
