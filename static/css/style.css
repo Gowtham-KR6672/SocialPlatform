@@ -2582,3 +2582,83 @@ body.logged-out .topbar{display:none}
   .hero-head .ph-actions #acQ,#acQ{flex:1 1 100%;max-width:none;width:100%}
   .hero-head .ph-actions #acA,#acA{flex:1 1 0;min-width:0;max-width:none}
 }
+/* ============================================================
+   Team & Brands → Publishing permissions + Client accounts
+   Tables on wide screens; one card per person on phones
+   ============================================================ */
+.tm-av,.tm-mob{display:none}
+.cl-id{display:inline-flex;flex-direction:column;gap:1px}
+.pm-chk{display:inline-flex;align-items:center;justify-content:center;gap:8px;cursor:pointer}
+@media(max-width:700px){
+  .tm-mob{display:inline}
+  .tm-av{display:grid;place-items:center;flex-shrink:0;width:36px;height:36px;border-radius:50%;
+    background:var(--brand-soft);color:var(--brand-dark);font-weight:800;font-size:14px}
+  /* the wrappers stop being a scroll box; each row is its own card */
+  #pageContent .perm-wrap,#pageContent .cl-wrap{overflow:visible;background:none;border:none;box-shadow:none;border-radius:0}
+  #pageContent table.rep-table.perm,#pageContent table.rep-table.cl-table{display:block;overflow:visible}
+  .perm thead,.cl-table thead{display:none}
+  .perm tbody,.cl-table tbody{display:flex;flex-direction:column;gap:10px}
+  #pageContent .perm tr,#pageContent .cl-table tr{display:grid;gap:8px;padding:14px;background:var(--card);
+    border:1px solid var(--line);border-radius:16px;box-shadow:0 1px 3px rgba(20,20,60,.05)}
+  #pageContent .perm td,#pageContent .cl-table td{display:block;padding:0;border:none;text-align:left;background:none}
+
+  /* Publishing permissions: name, "All platforms" switch, a 2-column grid of platform toggles, Save */
+  #pageContent .perm tr{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #pageContent .perm td.pm-user{grid-column:1/-1;display:flex;align-items:center;gap:10px;font-weight:700;font-size:14px;margin-bottom:2px}
+  #pageContent .perm td.pm-allc,#pageContent .perm td.pm-act{grid-column:1/-1}
+  .perm .pm-chk{width:100%;justify-content:flex-start;gap:7px;padding:10px;border:1px solid var(--line);border-radius:12px;
+    background:var(--surface-2);font-size:12.5px;font-weight:600;color:var(--ink-2);min-height:44px;box-sizing:border-box;min-width:0}
+  .perm .pm-chk .tm-mob{display:inline-flex;align-items:center;gap:5px;min-width:0}
+  .perm .pm-nm{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .perm .pm-chk input{width:18px;height:18px;margin:0;flex-shrink:0;accent-color:var(--brand)}
+  .perm .pm-chk:has(input:checked){border-color:#d9cffd;background:var(--brand-soft);color:var(--brand-dark)}
+  .perm .pm-chk:has(input:disabled){cursor:default;opacity:.7}
+  .perm td.pm-allc .pm-chk{font-weight:700}
+  .perm .pm-save{width:100%;justify-content:center;margin-top:4px}
+
+  /* Client accounts: login on top, then label / value lines, then the actions */
+  #pageContent .cl-table td.cl-login{display:flex;align-items:center;gap:10px;font-size:14px;padding-bottom:4px}
+  #pageContent .cl-table td[data-label]{display:flex;justify-content:space-between;align-items:center;gap:12px;
+    padding-top:8px;border-top:1px solid var(--line);font-size:13px;text-align:right;min-width:0}
+  #pageContent .cl-table td[data-label]::before{content:attr(data-label);color:var(--muted);font-weight:600;font-size:12px;text-align:left;flex-shrink:0}
+  #pageContent .cl-table td.cl-email{overflow-wrap:anywhere}
+  #pageContent .cl-table td.cl-act{display:flex;flex-wrap:wrap;gap:8px;padding-top:10px;border-top:1px solid var(--line)}
+  #pageContent .cl-table td.cl-act:empty{display:none}
+  .cl-table td.cl-act .btn{flex:1 1 auto;justify-content:center;padding:9px 10px !important}
+  .cl-table td.cl-act .btn.danger{flex:0 0 auto}
+}
+/* ============================================================
+   Analytics → "Same post, different platforms" and Reports table:
+   tables on wide screens, cards on phones
+   ============================================================ */
+.cmp-cards{display:none}
+@media(max-width:700px){
+  #pageContent .cmp-wrap{display:none}
+  .cmp-cards{display:flex;flex-direction:column;gap:10px}
+  .cmp-card{padding:14px;border:1px solid var(--line);border-radius:14px;background:var(--surface-2)}
+  .cmp-title{font-weight:700;font-size:14px;color:var(--ink);line-height:1.35;margin-bottom:10px;overflow-wrap:anywhere}
+  .cmp-head,.cmp-line{display:grid;grid-template-columns:minmax(0,1fr) 64px 56px;align-items:center;gap:8px}
+  .cmp-head{padding:0 10px 6px;font-size:10.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  .cmp-head span:not(:first-child),.cmp-n{text-align:right}
+  .cmp-line{padding:9px 10px;border-radius:10px;font-size:13px}
+  .cmp-line + .cmp-line{margin-top:2px}
+  .cmp-line.best{background:var(--green-soft)}
+  .cmp-plat{display:flex;align-items:center;gap:7px;min-width:0;font-weight:600;color:var(--ink-2)}
+  .cmp-nm{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cmp-plat .best-tag{flex-shrink:0}
+  .cmp-n{font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums}
+
+  /* Reports (and any .m-cards table): title on top, then label / value lines */
+  #pageContent .m-cards-wrap{overflow:visible;background:none;border:none;box-shadow:none;border-radius:0}
+  #pageContent table.rep-table.m-cards{display:block;overflow:visible}
+  .m-cards thead{display:none}
+  .m-cards tbody{display:flex;flex-direction:column;gap:10px}
+  #pageContent .m-cards tr{display:flex;flex-direction:column;gap:8px;padding:14px;background:var(--card);
+    border:1px solid var(--line);border-radius:16px;box-shadow:0 1px 3px rgba(20,20,60,.05)}
+  #pageContent .m-cards td{display:block;padding:0;border:none;background:none;text-align:left}
+  #pageContent .m-cards td.mc-title{font-size:14.5px;padding-bottom:2px;overflow-wrap:anywhere}
+  #pageContent .m-cards td[data-label]{display:flex;justify-content:space-between;align-items:center;gap:12px;
+    padding-top:8px;border-top:1px solid var(--line);font-size:13px;text-align:right;min-width:0}
+  #pageContent .m-cards td[data-label]::before{content:attr(data-label);color:var(--muted);font-weight:600;font-size:12px;text-align:left;flex-shrink:0}
+  #pageContent .m-cards td[data-label] > span{min-width:0;overflow-wrap:anywhere}
+}

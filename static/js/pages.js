@@ -29,6 +29,19 @@ function vbarChart(host, rows, opts){
   host.innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(opts.title||'chart')}">${g}</svg><div class="viz-tip hidden"></div>`;
   bindTips(host, rows);
 }
+/* Phones: "Same post, different platforms" as one card per post, one line per platform,
+   best platform first and marked (the table is hidden on small screens) */
+function cmpCards(list){
+  return `<div class="cmp-cards">${list.map(cmp=>{
+    const plats = PLAT_ORDER.filter(p=>cmp.platforms[p]).map(p=>({p, v:cmp.platforms[p]}))
+      .sort((a,b)=>(b.p===cmp.best)-(a.p===cmp.best) || b.v.views-a.v.views);
+    return `<div class="cmp-card"><div class="cmp-title">${esc(cmp.title||'Untitled')}</div>
+      <div class="cmp-head"><span>Platform</span><span>Views</span><span>Eng.</span></div>
+      ${plats.map(({p,v})=>`<div class="cmp-line ${cmp.best===p?'best':''}">
+        <span class="cmp-plat">${pi(p,15)} <span class="cmp-nm">${esc(platLabel(p))}</span>${cmp.best===p?`<span class="best-tag">${ic('check',11)} Best</span>`:''}</span>
+        <span class="cmp-n">${fmtK(v.views)}</span><span class="cmp-n">${fmtK(v.likes+v.comments+v.shares)}</span></div>`).join('')}
+    </div>`; }).join('')}</div>`;
+}
 function hbarChart(host, rows, opts){
   // rows: [{label, icon, value, display, tip}] — horizontal comparison bars
   const max = Math.max(1, ...rows.map(r=>r.value));
@@ -126,10 +139,10 @@ async function renderAnalytics(){
           <div class="tl-main"><b>${esc(t.title||'Untitled')}</b>${t.simulated?' <span class="tc-sim">sim</span>':''}
             <div class="muted">${Object.keys(t.platforms).map(p=>pi(p,13)).join(' ')} · ${fmtN(t.views)} views · ${fmtN(t.engagement)} engagements</div></div></div>`).join('')}</div></div>
       <div class="card glass viz-card"><h4>${ic('layers',15)} Same post, different platforms</h4>
-        ${d.compare.length?`<div class="rep-table-wrap"><table class="rep-table cmp"><thead><tr><th>Post</th>${PLAT_ORDER.filter(p=>d.compare.some(c=>c.platforms[p])).map(p=>`<th>${pi(p,14)}</th>`).join('')}</tr></thead>
+        ${d.compare.length?`<div class="rep-table-wrap cmp-wrap"><table class="rep-table cmp"><thead><tr><th>Post</th>${PLAT_ORDER.filter(p=>d.compare.some(c=>c.platforms[p])).map(p=>`<th>${pi(p,14)}</th>`).join('')}</tr></thead>
           <tbody>${d.compare.map(cmp=>`<tr><td class="rep-name">${esc(cmp.title||'Untitled')}</td>${PLAT_ORDER.filter(p=>d.compare.some(c=>c.platforms[p])).map(p=>{
             const v=cmp.platforms[p]; if(!v) return '<td class="muted">—</td>';
-            return `<td class="${cmp.best===p?'best':''}">${fmtK(v.views)} <span class="muted">views</span><br>${fmtK(v.likes+v.comments+v.shares)} <span class="muted">eng.</span>${cmp.best===p?`<div class="best-tag">${ic('check',11)} Best</div>`:''}</td>`; }).join('')}</tr>`).join('')}</tbody></table></div>`
+            return `<td class="${cmp.best===p?'best':''}">${fmtK(v.views)} <span class="muted">views</span><br>${fmtK(v.likes+v.comments+v.shares)} <span class="muted">eng.</span>${cmp.best===p?`<div class="best-tag">${ic('check',11)} Best</div>`:''}</td>`; }).join('')}</tr>`).join('')}</tbody></table></div>${cmpCards(d.compare)}`
           :'<div class="empty">Publish the same post to 2+ platforms to compare where it performs best.</div>'}</div>
     </div>`;
   const lab = s=>{ const [y,m,dd]=s.split('-'); return `${Number(dd)} ${MONTHS[Number(m)-1].slice(0,3)}`; };
@@ -317,15 +330,17 @@ async function renderTeam(){
     const box = $('#clBody'); if(!box) return;
     let d; try{ d = await api('/api/logins'); }catch(e){ box.innerHTML=`<div class="err">${esc(e.message)}</div>`; return; }
     const byId = Object.fromEntries(d.users.map(x=>[x.id, x]));
-    box.innerHTML = `<div class="rep-table-wrap"><table class="rep-table"><thead><tr><th>Login</th><th>Workspace</th><th>Email</th><th>Two-factor</th><th>Last seen</th><th></th></tr></thead><tbody>
-      ${d.users.map(x=>`<tr><td><b>${esc(x.username)}</b><div class="muted">${esc(x.role_label||'')}</div></td>
-        <td>${x.parent_id && byId[x.parent_id] ? 'Sub-User of <b>'+esc(byId[x.parent_id].username)+'</b>' : (x.is_permanent?'All (SuperAdmin)':'Own workspace')}</td>
-        <td>${esc(x.email||'—')}</td>
-        <td>${x.totp_enabled?`<span class="chip completed">${ic('check',11)} On</span>`:'<span class="chip draft">Off</span>'}</td>
-        <td>${x.online?'<span class="pdot on"></span> Online':esc(x.last_seen?fmtTime(String(x.last_seen).slice(0,19)):'Never')}</td>
-        <td style="white-space:nowrap">${x.is_permanent?'':`<button class="btn ghost xs" data-rpw="${x.id}" data-name="${esc(x.username)}">${ic('key',12)} Password</button>
+    // a table on wide screens; on phones each row becomes a card (see .cl-table in style.css)
+    box.innerHTML = `<div class="rep-table-wrap cl-wrap"><table class="rep-table cl-table"><thead><tr><th>Login</th><th>Workspace</th><th>Email</th><th>Two-factor</th><th>Last seen</th><th></th></tr></thead><tbody>
+      ${d.users.map(x=>`<tr><td class="cl-login"><span class="tm-av" aria-hidden="true">${esc(String(x.username||'?').slice(0,1).toUpperCase())}</span>
+          <span class="cl-id"><b>${esc(x.username)}</b><span class="muted">${esc(x.role_label||'')}</span></span></td>
+        <td data-label="Workspace"><span>${x.parent_id && byId[x.parent_id] ? 'Sub-User of <b>'+esc(byId[x.parent_id].username)+'</b>' : (x.is_permanent?'All (SuperAdmin)':'Own workspace')}</span></td>
+        <td data-label="Email" class="cl-email">${esc(x.email||'—')}</td>
+        <td data-label="Two-factor">${x.totp_enabled?`<span class="chip completed">${ic('check',11)} On</span>`:'<span class="chip draft">Off</span>'}</td>
+        <td data-label="Last seen"><span>${x.online?'<span class="pdot on"></span> Online':esc(x.last_seen?fmtTime(String(x.last_seen).slice(0,19)):'Never')}</span></td>
+        <td class="cl-act">${x.is_permanent?'':`<button class="btn ghost xs" data-rpw="${x.id}" data-name="${esc(x.username)}">${ic('key',12)} Password</button>
           ${x.totp_enabled?`<button class="btn ghost xs" data-r2fa="${x.id}" data-name="${esc(x.username)}">${ic('shield',12)} Reset 2FA</button>`:''}
-          <button class="btn danger xs" data-udel="${x.id}" data-name="${esc(x.username)}" title="Delete login">${ic('trash',12)}</button>`}</td></tr>`).join('')}
+          <button class="btn danger xs" data-udel="${x.id}" data-name="${esc(x.username)}" title="Delete login" aria-label="Delete login">${ic('trash',12)}<span class="tm-mob"> Delete</span></button>`}</td></tr>`).join('')}
       </tbody></table></div>`;
     box.querySelectorAll('[data-rpw]').forEach(b=>b.onclick=()=>resetUserPassword(b.dataset.rpw, b.dataset.name));
     box.querySelectorAll('[data-r2fa]').forEach(b=>b.onclick=()=>confirmBox(`Reset two-factor login for @${b.dataset.name}?`,
@@ -362,11 +377,13 @@ async function renderTeam(){
   if($('#permBody')){
     try{
       const d = await api('/api/team/permissions');
-      $('#permBody').innerHTML = d.users.length ? `<div class="rep-table-wrap"><table class="rep-table perm"><thead><tr><th>User</th><th>All</th>${d.platforms.map(p=>`<th title="${esc(p.label)}">${pi(p.key,15)}</th>`).join('')}<th></th></tr></thead>
-        <tbody>${d.users.map(x=>{ const all = x.platforms===null; return `<tr data-uid="${x.id}"><td>${esc(x.name_with_role)}</td>
-          <td><input type="checkbox" class="pm-all" ${all?'checked':''}></td>
-          ${d.platforms.map(p=>`<td><input type="checkbox" class="pm-p" value="${p.key}" ${all||(x.platforms||[]).includes(p.key)?'checked':''} ${all?'disabled':''}></td>`).join('')}
-          <td><button class="btn sm pm-save">${ic('save',13)} Save</button></td></tr>`; }).join('')}</tbody></table></div>`
+      // a table on wide screens; on phones each person becomes a card with platform toggles (see .perm in style.css)
+      $('#permBody').innerHTML = d.users.length ? `<div class="rep-table-wrap perm-wrap"><table class="rep-table perm"><thead><tr><th>User</th><th>All</th>${d.platforms.map(p=>`<th title="${esc(p.label)}">${pi(p.key,15)}</th>`).join('')}<th></th></tr></thead>
+        <tbody>${d.users.map(x=>{ const all = x.platforms===null; return `<tr data-uid="${x.id}">
+          <td class="pm-user"><span class="tm-av" aria-hidden="true">${esc(String(x.name_with_role||'?').slice(0,1).toUpperCase())}</span><span>${esc(x.name_with_role)}</span></td>
+          <td class="pm-allc"><label class="pm-chk"><input type="checkbox" class="pm-all" ${all?'checked':''} aria-label="All platforms"><span class="tm-mob">All platforms</span></label></td>
+          ${d.platforms.map(p=>`<td class="pm-pc"><label class="pm-chk" title="${esc(p.label)}"><input type="checkbox" class="pm-p" value="${p.key}" aria-label="${esc(p.label)}" ${all||(x.platforms||[]).includes(p.key)?'checked':''} ${all?'disabled':''}><span class="tm-mob">${pi(p.key,14)} <span class="pm-nm">${esc(p.label)}</span></span></label></td>`).join('')}
+          <td class="pm-act"><button class="btn sm pm-save">${ic('save',13)} Save</button></td></tr>`; }).join('')}</tbody></table></div>`
         : '<div class="empty">No other users to manage yet — create Sub-Users below.</div>';
       $('#permBody').querySelectorAll('tr[data-uid]').forEach(tr=>{
         const allCb = tr.querySelector('.pm-all');

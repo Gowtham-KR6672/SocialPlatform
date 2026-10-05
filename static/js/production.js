@@ -408,17 +408,18 @@ async function renderReports(){
       ? `<span class="perf early">+${reportDur(v._delta)} early</span>`
       : `<span class="perf late">-${reportDur(v._delta)} late</span>`;
   };
-  body.innerHTML = `<div class="rep-table-wrap"><table class="rep-table">
+  // a table on wide screens; on phones each video becomes a card (see .m-cards in style.css)
+  body.innerHTML = `<div class="rep-table-wrap m-cards-wrap"><table class="rep-table m-cards">
     <thead><tr><th>Video</th><th>Uploaded by</th><th>Upload date</th><th>Deadline</th>
       <th>Completed by</th><th>Completed at</th><th>On-time?</th></tr></thead>
     <tbody>${rows.map(v=>`<tr>
-       <td class="rep-name">${esc(v.title)}</td>
-       <td>${esc(v.owner||'—')}</td>
-       <td>${v.created_at?fmtTime(v.created_at):'—'}</td>
-       <td>${v.deadline?fmtLocal(v.deadline):'—'}</td>
-       <td>${esc(v.completed_by||'—')}</td>
-       <td>${v.completed_at?fmtTime(v.completed_at):'—'}</td>
-       <td>${perf(v)}</td>
+       <td class="rep-name mc-title">${esc(v.title)}</td>
+       <td data-label="Uploaded by"><span>${esc(v.owner||'—')}</span></td>
+       <td data-label="Upload date"><span>${v.created_at?fmtTime(v.created_at):'—'}</span></td>
+       <td data-label="Deadline"><span>${v.deadline?fmtLocal(v.deadline):'—'}</span></td>
+       <td data-label="Completed by"><span>${esc(v.completed_by||'—')}</span></td>
+       <td data-label="Completed at"><span>${v.completed_at?fmtTime(v.completed_at):'—'}</span></td>
+       <td data-label="On time?"><span>${perf(v)}</span></td>
      </tr>`).join('')}</tbody></table></div>`;
   $('#rep-export').onclick = ()=>{
     const head=['Video','Uploaded by','Upload date','Deadline','Completed by','Completed at','On-time'];
