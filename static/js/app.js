@@ -28,16 +28,6 @@ function applyTheme(){
 // apply immediately so there's no flash of the wrong theme
 applyTheme();
 try{ App.sidebarCollapsed = localStorage.getItem('pmSidebar')==='1'; }catch(e){}
-// phones: the menu button in the top bar shows / hides the icon rail (remembered per device)
-try{ App.mobileNavHidden = localStorage.getItem('pmSidebarMobile')==='1'; }catch(e){}
-document.body.classList.toggle('mnav-hidden', !!App.mobileNavHidden);
-function toggleMobileNav(){
-  App.mobileNavHidden = !App.mobileNavHidden;
-  document.body.classList.toggle('mnav-hidden', App.mobileNavHidden);
-  const b = $('#navToggle');
-  if(b){ b.setAttribute('aria-expanded', String(!App.mobileNavHidden)); b.title = (App.mobileNavHidden?'Show':'Hide')+' menu'; }
-  try{ localStorage.setItem('pmSidebarMobile', App.mobileNavHidden?'1':'0'); }catch(e){}
-}
 
 function openThemePicker(anchor){
   const ex = document.querySelector('#theme-pop'); if(ex){ ex.remove(); return; }
@@ -122,6 +112,15 @@ function tabAllowed(key){
   return (u.allowed_tabs || []).includes(key);
 }
 window.tabAllowed = tabAllowed;
+// Phones: the side menu becomes a bottom bar with these 4 headings; tapping one opens its pages.
+const MOBILE_NAV = [
+  {key:'posts',    label:'Posts',    ic:'calendar', tabs:['input','calendar','queue','published']},
+  {key:'insights', label:'Insights', ic:'bars',     tabs:['analytics','inbox','reports']},
+  {key:'tools',    label:'Tools',    ic:'layers',   tabs:['content','library','bio','loans']},
+  {key:'account',  label:'Account',  ic:'user',     tabs:['workspaces','team','activity','notifications','setup']},
+];
+// counts that mean "needs a look" — they put a dot on the heading in the bottom bar
+const MOBILE_NAV_ALERTS = ['navCalRed','navInboxCount','unread-notifications'];
 
 async function api(path, opts={}){
   const o = Object.assign({headers:{}}, opts);
@@ -161,14 +160,6 @@ function renderTopbar(){
   box.innerHTML='';
   const brand = $('#brand'); if(brand) brand.style.display = App.user ? '' : 'none';
   document.body.classList.toggle('logged-out', !App.user);
-  let nt = $('#navToggle');
-  if(!nt && brand){
-    nt = el(`<button class="icon-btn nav-toggle" id="navToggle" type="button" aria-controls="sidepanel">${ic('menu',20)}</button>`);
-    brand.parentNode.insertBefore(nt, brand);
-    nt.onclick = toggleMobileNav;
-  }
-  if(nt){ nt.hidden = !App.user; nt.setAttribute('aria-expanded', String(!App.mobileNavHidden));
-    nt.title = (App.mobileNavHidden?'Show':'Hide')+' menu'; }
   // Clean top bar — theme is fixed; the user stats strip, Tasks, Setup/Install,
   // Notifications and Chatbot have all been removed for a minimal, premium look.
   if(App.user){
@@ -269,7 +260,6 @@ const COSMIC_CUBE2_SVG = _CUBE('c-cube2', 0.6);
 function renderLanding(){
   $('#readonly-banner').classList.add('hidden');
   const brand = $('#brand'); if(brand) brand.style.display='none';   // no top-left brand on login
-  const nt = $('#navToggle'); if(nt) nt.hidden = true;
   document.body.classList.add('logged-out');
   const v = $('#view');
   const brandHTML = (cls)=>`<div class="lp-brand ${cls}">
@@ -504,9 +494,11 @@ function renderDashboard(readonly=false){
       <div class="content">
         <div id="pageContent"></div>
       </div>
-    </div>`;
+    </div>
+    ${mobileNavHTML()}`;
   if(typeof watchPage==='function') watchPage();
   v.querySelectorAll('[data-nav]').forEach(n=>n.onclick=()=>{ App.page=n.dataset.nav; renderDashboard(App.readonly); });
+  wireMobileNav();
   const sc = $('#sideCollapse');
   if(sc) sc.onclick = ()=>{
     App.sidebarCollapsed = !App.sidebarCollapsed;
@@ -536,6 +528,79 @@ function renderDashboard(readonly=false){
   else { App.page='input'; renderProduction(); }
   // reflect subscription state (read-only banner / renewal alert) on every page
   if(typeof applySubscriptionState==='function') applySubscriptionState();
+}
+
+/* ============================================================
+   PHONE MENU — bottom bar with 4 headings (MOBILE_NAV); tapping one
+   slides up a sheet with its pages. Counts are read from the (hidden)
+   side menu, so the existing badge loaders keep working unchanged.
+   ============================================================ */
+function mobileNavGroups(){
+  return MOBILE_NAV.map(g=>({...g, tabs:g.tabs.filter(tabAllowed).map(k=>NAV_TABS.find(t=>t.key===k)).filter(Boolean)}))
+                   .filter(g=>g.tabs.length);
+}
+function navCount(t){
+  const id = t.badge || t.unread, b = id && document.getElementById(id);
+  if(!b) return null;
+  return {id, n:parseInt(b.textContent,10) || 0, alert:!!t.unread || b.classList.contains('alert')};
+}
+function mobileNavHTML(){
+  const btns = mobileNavGroups().map(g=>`<button class="mnav-btn ${g.tabs.some(t=>t.key===App.page)?'active':''}" type="button"
+      data-mgroup="${g.key}" aria-haspopup="dialog" aria-expanded="false">
+      <span class="mnav-ic">${ic(g.ic,22)}<i class="mnav-dot"></i></span><span class="mnav-lb">${esc(g.label)}</span></button>`).join('');
+  return `<nav class="mnav" id="mnav" aria-label="Main menu">${btns}</nav>
+    <div class="mnav-sheet" id="mnavSheet"><div class="mns-backdrop"></div>
+      <div class="mns-panel" role="dialog" aria-modal="true" aria-labelledby="mnsTitle"></div></div>`;
+}
+function openMobileNav(key){
+  const sheet = $('#mnavSheet'), g = mobileNavGroups().find(x=>x.key===key);
+  if(!sheet || !g) return;
+  if(sheet.classList.contains('open') && sheet.dataset.group===key){ closeMobileNav(); return; }
+  const tile = t=>{ const c = navCount(t);
+    return `<button class="mns-item ${App.page===t.key?'active':''}" type="button" data-mpage="${t.key}">
+        <span class="mns-ic">${ic(t.ic,22)}</span><span class="mns-lb">${esc(t.label)}</span>
+        ${c && c.n ? `<span class="mns-badge ${c.alert?'alert':''}">${c.n}</span>` : ''}</button>`; };
+  let tiles = g.tabs.map(tile).join('');
+  if(key==='account') tiles += `<button class="mns-item mns-out" type="button" data-mout="1">
+      <span class="mns-ic">${ic('logout',22)}</span><span class="mns-lb">Log out</span></button>`;
+  sheet.querySelector('.mns-panel').innerHTML = `<div class="mns-grab"></div>
+    <div class="mns-head"><b id="mnsTitle">${esc(g.label)}</b>
+      <button class="icon-btn mns-x" type="button" aria-label="Close">${ic('x',18)}</button></div>
+    <div class="mns-grid">${tiles}</div>`;
+  sheet.dataset.group = key;
+  sheet.classList.add('open');
+  document.querySelectorAll('.mnav-btn').forEach(b=>{
+    const on = b.dataset.mgroup===key; b.classList.toggle('open', on); b.setAttribute('aria-expanded', String(on)); });
+}
+function closeMobileNav(){
+  const sheet = $('#mnavSheet');
+  if(!sheet || !sheet.classList.contains('open')) return false;
+  sheet.classList.remove('open'); delete sheet.dataset.group;
+  document.querySelectorAll('.mnav-btn').forEach(b=>{ b.classList.remove('open'); b.setAttribute('aria-expanded','false'); });
+  return true;
+}
+window.closeMobileNav = closeMobileNav;
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeMobileNav(); });
+function wireMobileNav(){
+  const bar = $('#mnav'), sheet = $('#mnavSheet'), side = $('#sidepanel');
+  if(!bar || !sheet) return;
+  bar.querySelectorAll('[data-mgroup]').forEach(b=>b.onclick=()=>openMobileNav(b.dataset.mgroup));
+  sheet.querySelector('.mns-backdrop').onclick = closeMobileNav;
+  sheet.querySelector('.mns-panel').onclick = e=>{
+    const t = e.target.closest('button'); if(!t) return;
+    if(t.classList.contains('mns-x')){ closeMobileNav(); return; }
+    if(t.dataset.mout){ closeMobileNav(); doLogout(); return; }
+    if(t.dataset.mpage){ closeMobileNav(); App.page = t.dataset.mpage; window.scrollTo(0,0); renderDashboard(App.readonly); }
+  };
+  // a dot on a heading when one of its pages needs a look (past due, new comments, unread)
+  if(!side) return;
+  const groups = mobileNavGroups();
+  const sync = ()=>groups.forEach(g=>{
+    const on = g.tabs.some(t=>{ const c = navCount(t); return c && MOBILE_NAV_ALERTS.includes(c.id) && c.n>0; });
+    const b = bar.querySelector(`[data-mgroup="${g.key}"]`); if(b) b.classList.toggle('attn', on);
+  });
+  new MutationObserver(sync).observe(side, {subtree:true, childList:true, characterData:true, attributes:true, attributeFilter:['class']});
+  sync();
 }
 
 async function loadUserBadge(){

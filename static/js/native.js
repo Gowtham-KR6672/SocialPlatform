@@ -4,14 +4,22 @@
    - Sign-in to Google, Meta, X… opens in the system browser tab:
      those providers block sign-in inside embedded web views.
    - External links open in the system browser.
-   - Android back button closes the open dialog, then goes back.
+   - Android back button closes the open menu / dialog, then goes back.
    - Data refreshes when the app comes back to the foreground.
+   - The screen doesn't zoom, so it never slides left and right.
    ============================================================ */
 (function(){
   const C = window.Capacitor;
   if(!C || typeof C.isNativePlatform !== 'function' || !C.isNativePlatform()) return;
   const P = C.Plugins || {};
   document.documentElement.classList.add('in-app', 'in-app-' + C.getPlatform());
+
+  // ---- no zoom ----------------------------------------------------------------
+  // iOS zooms in when a text box under 16px is tapped (the sign-in fields) and never
+  // zooms back out, so every screen after that is a little too wide and slides sideways.
+  // viewport-fit=cover lets the page read the home-bar height, so the phone menu sits above it.
+  const vp = document.querySelector('meta[name="viewport"]');
+  if(vp) vp.setAttribute('content', 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover');
 
   // ---- sign-in popups → system browser tab ----------------------------------
   // The site opens sign-in with window.open(url) and waits for the window to close.
@@ -45,6 +53,7 @@
   // ---- Android back button --------------------------------------------------
   if(P.App){
     P.App.addListener('backButton', ({canGoBack})=>{
+      if(typeof window.closeMobileNav === 'function' && window.closeMobileNav()) return;   // phone menu sheet
       const root = document.getElementById('modal-root');
       if(root && root.children.length && typeof window.closeModal === 'function'){ window.closeModal(); return; }
       if(window.App && App.user && App.page && App.page !== 'input' && typeof window.renderDashboard === 'function'){
