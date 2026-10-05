@@ -24,20 +24,44 @@ async function lrMeta(force){
   return LR.meta;
 }
 
+/* On phones the tab strip scrolls sideways: keep where it was and bring the chosen tab into view */
+function lrKeepTabVisible(strip, prevLeft){
+  if(!strip) return;
+  if(prevLeft) strip.scrollLeft = prevLeft;
+  const on = strip.querySelector('.lr-tab.on'); if(!on) return;
+  const l = on.offsetLeft - strip.offsetLeft, r = l + on.offsetWidth;
+  if(l < strip.scrollLeft + 8 || r > strip.scrollLeft + strip.clientWidth - 8)
+    strip.scrollTo({left: Math.max(0, l - (strip.clientWidth - on.offsetWidth) / 2), behavior: prevLeft ? 'smooth' : 'auto'});
+}
+async function lrShowBody(){
+  try{ await lrMeta(); }catch(e){ const b = $('#lrBody'); if(b) b.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+  const body = $('#lrBody'); if(!body) return;
+  ({overview:lrOverview, customers:lrCustomers, groups:lrGroups, send:lrSend, rules:lrRules, log:lrLog}[LR.tab]||lrOverview)(body);
+}
 async function renderLoans(){
   const c = $('#pageContent'); if(!c) return;
+  const oldStrip = c.querySelector('.lr-tabs'), prevLeft = oldStrip ? oldStrip.scrollLeft : 0;
   c.innerHTML = `<div class="page-head"><h2>Loan Reminders</h2><div class="spacer"></div>
       <button class="btn ghost" id="lrAddCust">${ic('plus',15)} Customer</button>
       <button class="btn" id="lrQuickSend">${ic('send',15)} Send message</button></div>
     <div class="lr-tabs" role="tablist">${LR_TABS.map(([k,l,i])=>
-      `<button role="tab" class="lr-tab ${LR.tab===k?'on':''}" data-lrtab="${k}">${ic(i,14)} ${l}</button>`).join('')}</div>
+      `<button role="tab" class="lr-tab ${LR.tab===k?'on':''}" aria-selected="${LR.tab===k}" data-lrtab="${k}">${ic(i,14)} ${l}</button>`).join('')}</div>
     <div id="lrBody"><div class="loading">Loading…</div></div>`;
-  c.querySelectorAll('[data-lrtab]').forEach(b=>b.onclick=()=>{ LR.tab=b.dataset.lrtab; renderLoans(); });
+  const strip = c.querySelector('.lr-tabs');
+  // switching tabs only swaps the content below, so the strip stays where the user left it
+  const select = k=>{
+    LR.tab = k;
+    strip.querySelectorAll('[data-lrtab]').forEach(t=>{ const on = t.dataset.lrtab===k;
+      t.classList.toggle('on', on); t.setAttribute('aria-selected', String(on)); });
+    lrKeepTabVisible(strip, strip.scrollLeft);
+    $('#lrBody').innerHTML = '<div class="loading">Loading…</div>';
+    lrShowBody();
+  };
+  strip.querySelectorAll('[data-lrtab]').forEach(b=>b.onclick=()=>select(b.dataset.lrtab));
   $('#lrAddCust').onclick = ()=>lrCustomerModal(null);
-  $('#lrQuickSend').onclick = ()=>{ LR.tab='send'; renderLoans(); };
-  try{ await lrMeta(); }catch(e){ $('#lrBody').innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
-  const body = $('#lrBody'); if(!body) return;
-  ({overview:lrOverview, customers:lrCustomers, groups:lrGroups, send:lrSend, rules:lrRules, log:lrLog}[LR.tab]||lrOverview)(body);
+  $('#lrQuickSend').onclick = ()=>select('send');
+  lrKeepTabVisible(strip, prevLeft);
+  lrShowBody();
 }
 window.renderLoans = renderLoans;
 
