@@ -2983,3 +2983,45 @@ body.logged-out .topbar{display:none}
   .user-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
   .user-stats .ustat{min-width:0;box-sizing:border-box}
 }
+/* Phones: summary tile rows (Published, Workspaces, Calendar, Billing, Loan Reminders) as an even
+   2-column grid across the screen; an odd last tile takes the full row */
+@media(max-width:700px){
+  .tiles{display:grid !important;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px !important;width:100%}
+  .hero-head .ph-actions .tiles{width:100%;flex:1 1 100%}
+  .tiles>.tile{min-width:0 !important;box-sizing:border-box}
+  .tiles>.tile:last-child:nth-child(odd){grid-column:1 / -1}
+}
+/* Phones: while the chat window is open the page behind it doesn't scroll,
+   and scrolling inside the chat stops at its ends instead of moving the page */
+@media(max-width:700px){
+  .msgr-window.chat-win{touch-action:pan-y;overscroll-behavior:contain}
+  .msgr-window.chat-win .msgr-msgs{overscroll-behavior:contain}
+  body .chat-backdrop{display:block;position:fixed;inset:0;z-index:1299;background:rgba(21,18,46,.22);touch-action:none;
+    animation:chatDim .2s ease both}
+}
+.chat-backdrop{display:none}
+@keyframes chatDim{from{opacity:0}}
+/* ============================================================
+   Push notifications card (Notifications page)
+   ============================================================ */
+.push-card{padding:14px 16px;margin-bottom:14px;display:flex;flex-direction:column;gap:12px}
+.push-card:empty{display:none}
+.push-row{display:flex;align-items:center;gap:12px}
+.push-ic{width:40px;height:40px;border-radius:12px;display:grid;place-items:center;flex-shrink:0;background:var(--surface-3);color:var(--muted)}
+.push-ic.on{background:var(--brand-soft);color:var(--brand-dark)}
+.push-txt{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.push-txt b{font-size:14px} .push-txt small{font-size:12.5px;color:var(--muted);line-height:1.45}
+.push-prefs{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;padding-top:10px;border-top:1px solid var(--line)}
+.push-prefs .btn{margin-left:auto}
+.push-sw{display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:var(--ink-2);cursor:pointer;user-select:none}
+.push-sw input{position:absolute;opacity:0;width:0;height:0}
+.push-sw span{position:relative;width:36px;height:20px;border-radius:99px;background:#d9d6e8;transition:background .2s;flex-shrink:0}
+.push-sw span::after{content:"";position:absolute;left:2px;top:2px;width:16px;height:16px;border-radius:50%;background:#fff;
+  box-shadow:0 1px 3px rgba(0,0,0,.2);transition:transform .2s}
+.push-sw input:checked + span{background:var(--brand)}
+.push-sw input:checked + span::after{transform:translateX(16px)}
+.push-sw input:focus-visible + span{outline:2px solid var(--brand);outline-offset:2px}
+.push-fcm{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;padding-top:10px;border-top:1px solid var(--line);font-size:12.5px;color:var(--ink-2)}
+.push-fcm>span{flex:1;min-width:200px}
+.push-up{cursor:pointer}
+@media(max-width:700px){ .push-prefs .btn{margin-left:0} .push-row .btn{flex-shrink:0} }

@@ -881,6 +881,14 @@ def init_db():
             status TEXT, error TEXT, provider_id TEXT, dedupe_key TEXT UNIQUE,
             sent_at TEXT, created_at TEXT
         );
+        -- V39: push notification subscriptions (browser Web Push or the app's FCM token)
+        CREATE TABLE IF NOT EXISTS push_subs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER, kind TEXT,                  -- web | fcm
+            endpoint TEXT UNIQUE,                        -- push service URL, or the FCM token
+            p256dh TEXT, auth TEXT, platform TEXT, user_agent TEXT,
+            created_at TEXT, last_used TEXT
+        );
         """
     if USE_POSTGRES:
         # SQLite's "INTEGER PRIMARY KEY AUTOINCREMENT" becomes Postgres SERIAL.
@@ -1221,6 +1229,11 @@ def add_notification(db, message, kind="info", actor="system", link="", recipien
         (message, kind, actor, link, datetime.utcnow().isoformat(), audience),
     )
     db.commit()
+    if recipients is not None:            # targeted notifications also go out as push (broadcasts don't)
+        try:
+            _push_notification(db, ids, message, link, actor)
+        except Exception:
+            pass
 
 
 # --------------------------------------------------------------------------- #
@@ -8130,7 +8143,8 @@ def api_chat_send(cid):
     db.execute("UPDATE conversation_members SET last_read_id=? WHERE conversation_id=? AND user_id=?",
                (cur.lastrowid, cid, u["id"]))
     db.commit()
-    # @-mentions -> add them to the chat + notify
+    # @-mentions -> add them to the chat + notify (they get that push, not a second one for the message)
+    mentioned = set()
     for uname in set(re.findall(r"@([A-Za-z0-9_.\-]+)", text or "")):
         mrow = db.execute("SELECT id, username FROM users WHERE lower(username)=lower(?)", (uname,)).fetchone()
         if mrow and in_ws(db, u, mrow["id"]):          # can't pull other clients into a chat
@@ -8140,6 +8154,11 @@ def api_chat_send(cid):
             add_notification(db, f'💬 {u["username"]} mentioned you in a chat: "{(text or "")[:70]}"',
                              "comment", u["username"], link=f"openchat:{cid}",
                              recipients=[mrow["id"]])
+            mentioned.add(mrow["id"])
+    try:
+        _push_chat_message(db, cid, u, text, bool(files), skip=mentioned)
+    except Exception:
+        pass
     return jsonify({"ok": True, "id": cur.lastrowid})
 
 
@@ -10979,6 +10998,257 @@ def api_loans_messages():
                                   "error": r["error"] or "", "body": r["body"] or "", "subject": r["subject"] or "",
                                   "kind": "auto" if r["installment_id"] else "manual", "rule": r["rule_key"] or "",
                                   "created_at": r["created_at"], "sent_at": r["sent_at"] or ""} for r in rows]})
+
+
+# --------------------------------------------------------------------------- #
+#  V39 : PUSH NOTIFICATIONS
+#  Browsers get Web Push (VAPID keys are created on first use and kept,
+#  encrypted, in settings). The Android / iOS app gets Firebase Cloud
+#  Messaging once the SuperAdmin uploads a Firebase service-account key.
+#  Targeted notifications and chat messages are pushed to their recipients,
+#  never to the person who caused them, and each user can switch either kind off.
+# --------------------------------------------------------------------------- #
+import push as PUSH
+
+PUSH_PREF_DEFAULT = {"notifications": True, "chat": True}
+# only real push services: the server POSTs to these URLs, so nothing else is accepted
+_PUSH_HOSTS = ("fcm.googleapis.com", "android.googleapis.com", "updates.push.services.mozilla.com",
+               "push.services.mozilla.com", "web.push.apple.com", ".notify.windows.com", ".push.apple.com")
+
+
+def _push_vapid(db):
+    raw = get_setting(db, "push_vapid_secret")
+    if not raw:
+        priv, pub = PUSH.new_vapid_keys()
+        # insert-if-absent so two server workers starting together agree on one key pair
+        db.execute("INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO NOTHING",
+                   ("push_vapid_secret", enc(json.dumps({"priv": priv, "pub": pub}))))
+        db.commit()
+        raw = get_setting(db, "push_vapid_secret")
+    try:
+        d = json.loads(raw)
+        return d["priv"], d["pub"]
+    except Exception:
+        return None, None
+
+
+def _push_fcm_sa(db):
+    raw = get_setting(db, "push_fcm_sa_secret")
+    try:
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
+def _push_prefs(db, uid):
+    try:
+        p = json.loads(uget_setting(db, uid, "push_prefs") or "{}")
+    except Exception:
+        p = {}
+    return {k: bool(p.get(k, v)) for k, v in PUSH_PREF_DEFAULT.items()}
+
+
+def _push_contact():
+    base = (os.environ.get("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    return os.environ.get("PUSH_CONTACT") or (base if base.startswith("https://")
+                                              else "mailto:notifications@socialplatform.app")
+
+
+def push_to_users(db, user_ids, title, body, link="", tag="", category="notifications"):
+    """Queue a push to every device of these users (respecting their on/off choice for `category`)."""
+    ids = {int(i) for i in (user_ids or []) if i}
+    if category:
+        ids = {i for i in ids if _push_prefs(db, i).get(category, True)}
+    if not ids:
+        return 0
+    q = ",".join("?" * len(ids))
+    subs = [dict(r) for r in db.execute(
+        f"SELECT id, user_id, kind, endpoint, p256dh, auth FROM push_subs WHERE user_id IN ({q})",
+        tuple(ids)).fetchall()]
+    if not subs:
+        return 0
+    priv, pub = _push_vapid(db) if any(x["kind"] == "web" for x in subs) else (None, None)
+    sa = _push_fcm_sa(db) if any(x["kind"] == "fcm" for x in subs) else None
+    data = {"title": (title or "Social Platform")[:120], "body": (body or "")[:240], "link": link or "",
+            "tag": tag or "", "url": "/?open=" + urllib.parse.quote(link or "notifications")}
+    threading.Thread(target=_push_send_all, args=(subs, data, priv, pub, sa, _push_contact()),
+                     daemon=True).start()
+    return len(subs)
+
+
+def _push_send_all(subs, data, priv, pub, sa, contact):
+    ok, gone = [], []
+    for x in subs:
+        if x["kind"] == "web" and priv:
+            res = PUSH.send_web(x, data, priv, pub, contact)
+        elif x["kind"] == "fcm" and sa:
+            res = PUSH.send_fcm(sa, x["endpoint"], data)
+        else:
+            continue
+        if res[0]:
+            ok.append(x["id"])
+        elif res[1]:
+            gone.append(x["id"])            # unsubscribed / app removed → forget it
+    if not (ok or gone):
+        return
+    db = db_connect()
+    try:
+        now = datetime.utcnow().isoformat()
+        for i in gone:
+            db.execute("DELETE FROM push_subs WHERE id=?", (i,))
+        for i in ok:
+            db.execute("UPDATE push_subs SET last_used=? WHERE id=?", (now, i))
+        db.commit()
+    finally:
+        db.close()
+
+
+def _push_notification(db, ids, message, link, actor):
+    ids = set(ids or [])
+    if actor and actor != "system":         # don't buzz the person who did it
+        row = db.execute("SELECT id FROM users WHERE username=?", (actor,)).fetchone()
+        if row:
+            ids.discard(row["id"])
+    if ids:
+        push_to_users(db, ids, "Social Platform", message, link or "notifications",
+                      tag="n-" + (link or "notifications"), category="notifications")
+
+
+def _push_chat_message(db, cid, author, text, has_files, skip=()):
+    rows = db.execute("SELECT user_id FROM conversation_members WHERE conversation_id=? AND user_id<>?",
+                      (cid, author["id"])).fetchall()
+    ids = {r["user_id"] for r in rows} - set(skip or ())
+    if not ids:
+        return
+    conv = db.execute("SELECT * FROM conversations WHERE id=?", (cid,)).fetchone()
+    try:
+        name = author["display_name"] or author["username"]
+    except Exception:
+        name = author["username"]
+    where = ""
+    if conv and conv["video_id"]:
+        v = db.execute("SELECT title FROM videos WHERE id=?", (conv["video_id"],)).fetchone()
+        where = (v["title"] if v else "") or ""
+    elif conv and conv["is_group"]:
+        where = conv["title"] or "Group chat"
+    title = f"{name} · {where}" if where else name
+    body = (text or "").strip() or ("📎 Sent an attachment" if has_files else "New message")
+    push_to_users(db, ids, title, body, f"openchat:{cid}", tag=f"chat-{cid}", category="chat")
+
+
+def _push_endpoint_ok(url):
+    try:
+        u = urllib.parse.urlparse(url)
+    except Exception:
+        return False
+    host = (u.hostname or "").lower()
+    return u.scheme == "https" and any(host == h.lstrip(".") or (h.startswith(".") and host.endswith(h))
+                                       for h in _PUSH_HOSTS)
+
+
+@app.route("/sw.js")
+def push_service_worker():
+    resp = send_from_directory(os.path.join(app.root_path, "static"), "sw.js", mimetype="application/javascript")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["Service-Worker-Allowed"] = "/"
+    return resp
+
+
+@app.route("/api/push/config")
+def api_push_config():
+    u = require_login()
+    db = get_db()
+    _, pub = _push_vapid(db)
+    mine = db.execute("SELECT kind, COUNT(*) AS n FROM push_subs WHERE user_id=? GROUP BY kind",
+                      (u["id"],)).fetchall()
+    sa = _push_fcm_sa(db)
+    out = {"vapid_public": pub, "prefs": _push_prefs(db, u["id"]), "fcm_ready": bool(sa),
+           "devices": {r["kind"]: r["n"] for r in mine}, "is_super": bool(is_super(u))}
+    if is_super(u):
+        out["fcm_project"] = (sa or {}).get("project_id", "")
+    return jsonify(out)
+
+
+@app.route("/api/push/subscribe", methods=["POST"])
+def api_push_subscribe():
+    u = require_login()
+    db = get_db()
+    d = request.get_json(force=True) or {}
+    now = datetime.utcnow().isoformat()
+    ua = (request.headers.get("User-Agent") or "")[:200]
+    if d.get("kind") == "fcm":
+        token = (d.get("token") or "").strip()
+        if not (20 <= len(token) <= 4096):
+            return jsonify({"error": "Invalid device token."}), 400
+        kind, endpoint, p256dh, auth, plat = "fcm", token, "", "", (d.get("platform") or "android")[:20]
+    else:
+        sub = d.get("subscription") or {}
+        endpoint, keys = (sub.get("endpoint") or "").strip(), (sub.get("keys") or {})
+        if not _push_endpoint_ok(endpoint) or not keys.get("p256dh") or not keys.get("auth"):
+            return jsonify({"error": "This browser's push subscription isn't valid."}), 400
+        kind, p256dh, auth, plat = "web", keys["p256dh"][:200], keys["auth"][:100], "web"
+    db.execute("INSERT INTO push_subs (user_id, kind, endpoint, p256dh, auth, platform, user_agent, created_at) "
+               "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET user_id=excluded.user_id, "
+               "kind=excluded.kind, p256dh=excluded.p256dh, auth=excluded.auth, platform=excluded.platform, "
+               "user_agent=excluded.user_agent",
+               (u["id"], kind, endpoint, p256dh, auth, plat, ua, now))
+    db.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/push/unsubscribe", methods=["POST"])
+def api_push_unsubscribe():
+    u = require_login()
+    db = get_db()
+    d = request.get_json(force=True) or {}
+    key = (d.get("endpoint") or d.get("token") or "").strip()
+    if key:
+        db.execute("DELETE FROM push_subs WHERE endpoint=? AND user_id=?", (key, u["id"]))
+        db.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/push/prefs", methods=["POST"])
+def api_push_prefs():
+    u = require_login()
+    db = get_db()
+    d = request.get_json(force=True) or {}
+    prefs = _push_prefs(db, u["id"])
+    for k in PUSH_PREF_DEFAULT:
+        if k in d:
+            prefs[k] = bool(d[k])
+    uset_setting(db, u["id"], "push_prefs", json.dumps(prefs))
+    return jsonify({"ok": True, "prefs": prefs})
+
+
+@app.route("/api/push/test", methods=["POST"])
+def api_push_test():
+    u = require_login()
+    db = get_db()
+    n = push_to_users(db, [u["id"]], "Social Platform", "Push notifications are working on this device. 🎉",
+                      "notifications", tag="test", category=None)
+    if not n:
+        return jsonify({"error": "Push isn't switched on for any of your devices yet."}), 400
+    return jsonify({"ok": True, "devices": n})
+
+
+@app.route("/api/push/fcm", methods=["POST", "DELETE"])
+def api_push_fcm():
+    """SuperAdmin: the Firebase service-account key used to push to the Android / iOS app."""
+    u = require_login()
+    if not is_super(u):
+        return jsonify({"error": "Only the SuperAdmin can change this."}), 403
+    db = get_db()
+    if request.method == "DELETE":
+        set_setting(db, "push_fcm_sa_secret", "")
+        return jsonify({"ok": True})
+    try:
+        sa = PUSH.parse_service_account((request.get_json(force=True) or {}).get("service_account") or "")
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    keep = {k: sa[k] for k in ("type", "project_id", "client_email", "private_key", "token_uri") if k in sa}
+    set_setting(db, "push_fcm_sa_secret", json.dumps(keep))
+    return jsonify({"ok": True, "project": keep["project_id"]})
 
 
 def _scheduler_loop():

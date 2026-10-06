@@ -223,8 +223,11 @@ window.loadAiStatus = loadAiStatus;
    ============================================================ */
 async function boot(){
   try{ const d = await api('/api/me'); App.user = d.user; }catch(e){}
+  // opened from a push notification (/?open=<link>): go there once signed in
+  const op = new URLSearchParams(location.search).get('open');
+  if(op){ try{ sessionStorage.setItem('pmOpenLink', op); }catch(e){} history.replaceState(null, '', location.pathname); }
   renderTopbar();
-  if(App.user){ renderDashboard(); startHeartbeat(); if(typeof maybeShowOnboarding==='function') maybeShowOnboarding(); }
+  if(App.user){ renderDashboard(); startHeartbeat(); if(typeof maybeShowOnboarding==='function') maybeShowOnboarding(); afterEnter(); }
   else{ renderLanding(); }
   const rt = new URLSearchParams(location.search).get('reset_token');
   if(rt){ history.replaceState(null, '', location.pathname); openResetWithToken(rt); }
@@ -963,9 +966,16 @@ function openLogin(){
 }
 
 /* logging in goes straight to the dashboard */
+/* every time someone lands in the dashboard: keep push linked to them, open a pending push link */
+function afterEnter(){
+  if(window.Push) Push.sync();
+  let link = ''; try{ link = sessionStorage.getItem('pmOpenLink') || ''; sessionStorage.removeItem('pmOpenLink'); }catch(e){}
+  if(link) setTimeout(()=>openLinkTarget(link), 300);
+}
 function enterDashboard(){
   closeModal(); renderTopbar(); renderDashboard();
   startHeartbeat();          // presence (kept; silent)
+  afterEnter();
   // No auto pop-ups except the FIRST-TIME onboarding Welcome popup below.
   // Notifications, Tasks, Chatbot and the Setup/Install prompt are all removed.
   if(typeof maybeShowOnboarding==='function') maybeShowOnboarding();
@@ -1118,6 +1128,7 @@ window.openProfile = openProfile;
 async function doLogout(){
   if(typeof stopHeartbeat==='function') stopHeartbeat();
   if(typeof stopTasksPolling==='function') stopTasksPolling();
+  if(window.Push) await Push.forget();          // this device stops getting this user's pushes
   await api('/api/logout',{method:'POST'});
   App.user=null; renderTopbar(); renderLanding();
   toast('Logged out');
@@ -1251,6 +1262,7 @@ function renderNotifications(){
         <button class="${App._notifFilter==='unread'?'on':''}" data-f="unread">Unread</button>
       </div>
       <button class="btn ghost sm" id="nf-readall">${ic('check',14)} Mark all read</button></div>
+    <div class="card glass push-card" id="pushCard"></div>
     <div class="nf-filter">
       <label class="nf-search">${ic('search',15)}<input id="nf-q" placeholder="Search notifications…" value="${esc(App._notifQ||'')}"></label>
       <label class="nf-datebox" title="Filter by date">${ic('calendar',15)}<span id="nf-date-lbl"></span>
@@ -1271,6 +1283,7 @@ function renderNotifications(){
     confirmBox(`Delete ${ids.length} notification(s) from your list?`,'They are removed from your notifications only — other users still see theirs.',
       async ()=>{ try{ await api('/api/notifications/hide-bulk',{method:'POST', body:{ids}}); toast('Removed from your list','good'); loadNotifCount().then(fillNotifFeed); }catch(e){ toast(e.message,'warn'); } }, 'Delete from my list');
   };
+  if(typeof renderPushCard==='function') renderPushCard();
   $('#nf-q').oninput = (e)=>{ App._notifQ=e.target.value; fillNotifFeed(); };
   // the native date field is invisible on top of a readable box ("Any date" / the chosen day); tapping opens the picker
   const dateLbl = ()=>{ const v=App._notifDate, l=$('#nf-date-lbl'); if(!l) return;

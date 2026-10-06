@@ -110,6 +110,32 @@ Camera / photo library / microphone permission texts are already in
 
 ---
 
+## Push notifications in the app (Firebase)
+
+Browsers get push notifications without any setup (Notifications page → Push
+notifications → Turn on). The Android / iOS app uses Firebase Cloud Messaging,
+which needs a free Firebase project — one time:
+
+1. https://console.firebase.google.com → **Add project** (Google Analytics not needed).
+2. **Add app → Android**, package name `com.socialplatform.app` → **Register app** →
+   download **google-services.json** and put it in `mobile/android/app/`.
+3. **Project settings → Service accounts → Generate new private key** (a .json file).
+   Sign in to the website as SuperAdmin → **Notifications → Push notifications →
+   Upload key** and choose that file. Keep it private — never commit it or send it by chat.
+4. Add the plugin and rebuild the app:
+   ```bash
+   cd mobile
+   npm install @capacitor/push-notifications
+   npx cap sync
+   ```
+   then build and install the app again (see Android above).
+5. In the app: **Notifications → Push notifications → Turn on** and allow notifications.
+
+Add the plugin (step 4) only after `google-services.json` is in place — without it
+Android can't start Firebase. For iOS also upload an APNs key in Firebase
+(Project settings → Cloud Messaging) and turn on **Push Notifications** under
+Signing & Capabilities in Xcode.
+
 ## Moving the site (e.g. to AWS)
 
 Change `server.url` in `capacitor.config.json` to the new address, e.g.

@@ -6,7 +6,12 @@
 const ChatWin = { cid: null, timer: null, lastId: 0, node: null };
 
 function closeChatWindow(){
-  if(ChatWin.outside){ document.removeEventListener('pointerdown', ChatWin.outside, true); ChatWin.outside = null; }
+  if(ChatWin.backdrop){ ChatWin.backdrop.remove(); ChatWin.backdrop = null; }
+  if(ChatWin.lockY != null){                       // release the page and put it back where it was
+    const y = ChatWin.lockY; ChatWin.lockY = null;
+    Object.assign(document.body.style, {position:'', top:'', left:'', right:'', width:''});
+    window.scrollTo(0, y);
+  }
   if(ChatWin.timer) clearInterval(ChatWin.timer);
   if(ChatWin.node) ChatWin.node.remove();
   ChatWin.cid = null; ChatWin.timer = null; ChatWin.node = null; ChatWin.lastId = 0;
@@ -84,13 +89,18 @@ function openChatWindow(cid){
     </div>`);
   document.body.appendChild(w);
   ChatWin.cid = cid; ChatWin.node = w; ChatWin.lastId = -1;
-  // phones: a tap anywhere outside the chat closes it (a chat button just switches conversation)
-  ChatWin.outside = e=>{
-    if(!ChatWin.node || !window.matchMedia || !matchMedia('(max-width:700px)').matches) return;
-    if(ChatWin.node.contains(e.target) || (e.target.closest && e.target.closest('.chat-btn, #modal-root'))) return;
-    closeChatWindow();
-  };
-  setTimeout(()=>{ if(ChatWin.node === w && ChatWin.outside) document.addEventListener('pointerdown', ChatWin.outside, true); }, 0);
+  // phones: a light layer behind the chat; a tap on it closes the chat, a swipe on it does nothing
+  // (so the page behind neither scrolls nor closes the chat by accident). Hidden on wider screens.
+  const back = el(`<div class="chat-backdrop" aria-hidden="true"></div>`);
+  back.addEventListener('click', closeChatWindow);
+  back.addEventListener('touchmove', e=>e.preventDefault(), {passive:false});
+  document.body.insertBefore(back, w);
+  ChatWin.backdrop = back;
+  // phones: pin the page where it is, so nothing behind the chat scrolls (restored on close)
+  if(window.matchMedia && matchMedia('(max-width:700px)').matches && ChatWin.lockY == null){
+    ChatWin.lockY = window.scrollY;
+    Object.assign(document.body.style, {position:'fixed', top:(-ChatWin.lockY)+'px', left:'0', right:'0', width:'100%'});
+  }
   $('.msgr-win-x', w).onclick = closeChatWindow;
 
   const inp = $('.mw-in', w), files = $('.mw-files', w), attp = $('.mw-attp', w);
