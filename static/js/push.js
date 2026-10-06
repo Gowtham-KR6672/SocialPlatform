@@ -27,6 +27,11 @@ const Push = (function(){
   /* ---- the app (FCM) ---- */
   function hookNative(){
     const pn = PN(); if(!pn || nativeHooked) return; nativeHooked = true;
+    // Android: the channel pushes arrive on (pops up with sound); the server sends to channel "general"
+    if(pn.createChannel && Capacitor.getPlatform() === 'android'){
+      pn.createChannel({id:'general', name:'Notifications', description:'New notifications and chat messages',
+                        importance:4, visibility:1, vibration:true}).catch(()=>{});
+    }
     pn.addListener('registration', async t=>{
       try{ localStorage.setItem('pmFcmToken', t.value); }catch(e){}
       try{ await api('/api/push/subscribe', {method:'POST', body:{kind:'fcm', token:t.value, platform:Capacitor.getPlatform()}}); }catch(e){}

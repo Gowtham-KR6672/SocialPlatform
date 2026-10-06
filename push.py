@@ -147,7 +147,8 @@ def send_fcm(sa, token, data):
             "notification": {"title": data.get("title", ""), "body": data.get("body", "")},
             "data": {k: str(data.get(k, "")) for k in ("link", "url", "tag")},
             "android": {"priority": "HIGH",
-                        "notification": {"tag": data.get("tag") or "sp", "default_sound": True}},
+                        "notification": {"tag": data.get("tag") or "sp", "default_sound": True,
+                                         "channel_id": "general"}},
             "apns": {"payload": {"aps": {"sound": "default", "thread-id": data.get("tag") or "sp"}}},
         }}
         req = urllib.request.Request(
