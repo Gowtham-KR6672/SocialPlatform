@@ -33,23 +33,29 @@ window.userTz = userTz; window.tzOffset = tzOffset;
 
 async function renderCalendar(){
   if(!App.calMonth){ const n=new Date(); App.calMonth={y:n.getFullYear(), m:n.getMonth()}; }
+  if(!App.calView){ try{ App.calView = localStorage.getItem('pmCalView') || 'grid'; }catch(e){ App.calView = 'grid'; } }
   const c = $('#pageContent');
   c.innerHTML = `<div class="page-head"><h2>Content Calendar</h2><div class="spacer"></div>
       ${App.readonly?'':`<button class="btn ghost sm" id="calText">${ic('file',15)} Text post</button>
       <button class="btn ghost sm" id="calBulk">${ic('layers',15)} Bulk upload</button>`}
       <div class="tiles" id="calTiles" style="margin:0"></div></div>
     <div class="cal-layout">
-     <div>
+     <div id="calMain" class="${App.calView==='list'?'cal-mode-list':''}">
       <div class="cal-head">
         <button class="btn ghost sm" id="calPrev" aria-label="Previous month">${ic('chevLeft',16)}</button>
         <h3 id="calTitle"></h3>
         <button class="btn ghost sm" id="calNext" aria-label="Next month">${ic('chevRight',16)}</button>
         <button class="btn ghost sm" id="calToday">Today</button>
+        <div class="seg sm cal-viewsw" id="calView" role="group" aria-label="Calendar layout">
+          <button type="button" data-v="grid" class="${App.calView!=='list'?'on':''}" aria-pressed="${App.calView!=='list'}">${ic('calendar',14)} Grid</button>
+          <button type="button" data-v="list" class="${App.calView==='list'?'on':''}" aria-pressed="${App.calView==='list'}">${ic('list',14)} List</button>
+        </div>
       </div>
       <div class="cal-grid">
         <div class="cal-dow">${DOW.map(d=>`<div>${d}</div>`).join('')}</div>
         <div class="cal-body" id="calBody"></div>
       </div>
+      <div class="cal-list" id="calList"></div>
       <div class="legend">
         <span><i style="background:var(--gold)"></i> Draft</span>
         <span><i style="background:var(--brand)"></i> In review / approved / scheduled</span>
@@ -63,6 +69,12 @@ async function renderCalendar(){
   $('#calPrev').onclick = ()=>shiftMonth(-1);
   $('#calNext').onclick = ()=>shiftMonth(1);
   $('#calToday').onclick= ()=>{ const n=new Date(); App.calMonth={y:n.getFullYear(),m:n.getMonth()}; renderCalendar(); };
+  // Grid ↔ List (remembered on this device); the list shows full post names, handy on phones
+  $('#calView').querySelectorAll('button').forEach(b=>b.onclick=()=>{
+    App.calView = b.dataset.v; try{ localStorage.setItem('pmCalView', App.calView); }catch(e){}
+    $('#calMain').classList.toggle('cal-mode-list', App.calView==='list');
+    $('#calView').querySelectorAll('button').forEach(x=>{ const on = x.dataset.v===App.calView; x.classList.toggle('on', on); x.setAttribute('aria-pressed', String(on)); });
+  });
   if($('#calBulk')) $('#calBulk').onclick = openBulkUpload;
   if($('#calText')) $('#calText').onclick = ()=>openTextPost(App._today || new Date().toISOString().slice(0,10));
   await drawCalendar();
@@ -198,6 +210,8 @@ async function drawCalendar(){
     body.appendChild(cell);
   }
 
+  drawCalList(data, y, m);
+
   const jr = $('#jumpRed');
   if(jr) jr.onclick = ()=>{
     if(firstRedCell){ const c=$(`.cal-cell[data-date="${firstRedCell}"]`);
@@ -207,6 +221,32 @@ async function drawCalendar(){
   };
 }
 window.drawCalendar = drawCalendar;
+
+/* List layout: one row per day of the month that has posts, each post with its full name,
+   time, status and platforms. Tapping a post or a day opens that day. */
+const CAL_STATE_LABEL = {draft:'Draft', submitted:'In review', approved:'Approved', scheduled:'Scheduled', published:'Published', overdue:'Past due'};
+function drawCalList(data, y, m){
+  const box = $('#calList'); if(!box) return;
+  const today = data.today, prefix = `${y}-${String(m+1).padStart(2,'0')}-`;
+  const days = Object.keys(data.by_date||{}).filter(d=>d.startsWith(prefix) && (data.by_date[d]||[]).length).sort();
+  if(!days.length){ box.innerHTML = `<div class="cal-list-empty">${ic('calendar',22)}<b>Nothing planned in ${MONTHS[m]}</b>
+      <span>Switch to Grid to tap a day and add a post.</span></div>`; return; }
+  box.innerHTML = days.map(ds=>{
+    const d = new Date(ds+'T12:00:00');
+    const rows = data.by_date[ds].map(it=>{
+      const cls = (it.state!=='published' && ds<today) ? 'overdue' : it.state;
+      const t = localFromUtc(it.publish_at), time = t ? t.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : (it.publish_time||'');
+      return `<button type="button" class="cl-item st-${esc(cls)}" data-day="${ds}">
+          <span class="cl-main"><b>${esc(it.title||'Untitled')}</b>
+            <small><span class="cl-st">${esc(CAL_STATE_LABEL[cls]||cls)}</span>${time?` · ${esc(time)}`:''}</small></span>
+          <span class="cl-plats">${(it.platforms||[]).map(p=>pi(p,13)).join('')}</span></button>`; }).join('');
+    return `<div class="cl-day${ds===today?' today':''}${ds<today?' past':''}">
+        <button type="button" class="cl-date" data-day="${ds}" aria-label="Open ${esc(prettyDate(ds))}">
+          <small>${DOW[d.getDay()]}</small><b>${d.getDate()}</b></button>
+        <div class="cl-items">${rows}</div></div>`;
+  }).join('');
+  box.querySelectorAll('[data-day]').forEach(b=>b.onclick=()=>openDay(b.dataset.day));
+}
 
 /* ---------- Reschedule (change the date of a post) ---------- */
 function canReschedule(it){

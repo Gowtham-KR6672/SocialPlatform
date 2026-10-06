@@ -2920,3 +2920,66 @@ body.logged-out .topbar{display:none}
   #pageContent .m-cards td[data-label]::before{content:attr(data-label);color:var(--muted);font-weight:600;font-size:12px;text-align:left;flex-shrink:0}
   #pageContent .m-cards td[data-label] > span{min-width:0;overflow-wrap:anywhere}
 }
+/* ============================================================
+   Notifications date box, chat on phones, calendar list layout,
+   Reports tiles on phones
+   ============================================================ */
+/* date filter: a readable box ("Any date" / the chosen day); the native date field sits invisibly on top */
+.nf-datebox{position:relative;display:inline-flex;align-items:center;gap:8px;min-width:150px;padding:8px 12px;border-radius:10px;
+  background:#fff;border:1px solid var(--line-strong);font-size:13px;font-weight:600;color:var(--muted);cursor:pointer;box-sizing:border-box}
+.nf-datebox .ico{color:var(--brand);flex-shrink:0}
+.nf-datebox.set{color:var(--ink);border-color:#cfc3ff;background:var(--brand-soft)}
+.nf-filter .nf-datebox input#nf-date{position:absolute;inset:0;width:100%;height:100%;max-width:none;margin:0;padding:0;border:0;opacity:0;cursor:pointer}
+.nf-datebox:focus-within{border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+@media(max-width:700px){
+  .nf-filter{gap:8px}
+  .nf-filter .nf-search{flex:1 1 100%;max-width:none;min-width:0}
+  .nf-filter .nf-datebox{flex:1 1 auto}
+}
+/* chat window on phones: sits above the bottom menu and fits the screen */
+@media(max-width:700px){
+  .msgr-window.chat-win{left:8px;right:8px !important;width:auto !important;
+    bottom:calc(var(--mnav-h,64px) + env(safe-area-inset-bottom) + 10px) !important;
+    height:min(460px,calc(100vh - var(--mnav-h,64px) - 96px));height:min(460px,calc(100dvh - var(--mnav-h,64px) - 96px));
+    border-radius:16px;box-shadow:0 18px 48px rgba(21,18,46,.28)}
+}
+/* calendar: Grid / List switch and the list layout */
+.cal-viewsw{margin-left:auto}
+.cal-viewsw button{display:inline-flex;align-items:center;gap:6px}
+.cal-list{display:none}
+#calMain.cal-mode-list .cal-grid{display:none}
+#calMain.cal-mode-list .cal-list{display:flex;flex-direction:column;gap:10px;margin-bottom:12px}
+#calMain.cal-mode-list .legend-tip{display:none}
+.cl-day{display:flex;gap:12px;align-items:flex-start;padding:12px;background:var(--card);border:1px solid var(--line);border-radius:14px;
+  box-shadow:0 1px 3px rgba(20,20,60,.05)}
+.cl-day.today{border-color:#cfc3ff;box-shadow:0 0 0 3px var(--brand-soft)}
+.cl-date{flex-shrink:0;width:52px;padding:6px 0;border:0;border-radius:12px;background:var(--surface-3);color:var(--ink);cursor:pointer;
+  display:flex;flex-direction:column;align-items:center;gap:1px;font:inherit}
+.cl-date small{font-size:10.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.cl-date b{font-size:20px;font-weight:800;line-height:1.1}
+.cl-day.today .cl-date{background:var(--brand);color:#fff} .cl-day.today .cl-date small{color:rgba(255,255,255,.8)}
+.cl-day.past .cl-date{opacity:.7}
+.cl-items{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px}
+.cl-item{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 10px 9px 12px;border:1px solid var(--line);
+  border-left:4px solid var(--brand);border-radius:10px;background:var(--surface-2);cursor:pointer;font:inherit;color:var(--ink)}
+.cl-item:hover{border-color:#cfc3ff;border-left-color:inherit}
+.cl-item.st-draft{border-left-color:var(--gold)} .cl-item.st-published{border-left-color:var(--green)} .cl-item.st-overdue{border-left-color:var(--red)}
+.cl-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.cl-main b{font-size:13.5px;font-weight:700;line-height:1.35;overflow-wrap:anywhere}
+.cl-main small{font-size:12px;color:var(--muted)}
+.cl-st{font-weight:700}
+.st-published .cl-st{color:var(--green-ink)} .st-overdue .cl-st{color:var(--red-ink)} .st-draft .cl-st{color:#a16207}
+.cl-plats{display:flex;flex-wrap:wrap;gap:3px;justify-content:flex-end;max-width:84px;flex-shrink:0}
+.cl-plats .pico{width:14px;height:14px}
+.cal-list-empty{display:flex;flex-direction:column;align-items:center;gap:6px;padding:34px 16px;text-align:center;color:var(--muted);
+  background:var(--card);border:1px dashed var(--line-strong);border-radius:14px}
+.cal-list-empty .ico{color:var(--brand)} .cal-list-empty b{color:var(--ink)}
+@media(max-width:700px){
+  .cal-viewsw{margin-left:0;width:100%;display:grid !important;grid-template-columns:1fr 1fr}
+  .cal-viewsw button{justify-content:center}
+}
+/* Reports (and other summary tiles): two even columns across the phone */
+@media(max-width:700px){
+  .user-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .user-stats .ustat{min-width:0;box-sizing:border-box}
+}

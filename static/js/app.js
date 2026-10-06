@@ -1253,7 +1253,8 @@ function renderNotifications(){
       <button class="btn ghost sm" id="nf-readall">${ic('check',14)} Mark all read</button></div>
     <div class="nf-filter">
       <label class="nf-search">${ic('search',15)}<input id="nf-q" placeholder="Search notifications…" value="${esc(App._notifQ||'')}"></label>
-      <input class="f nf-date" id="nf-date" type="date" value="${esc(App._notifDate||'')}" title="Filter by date">
+      <label class="nf-datebox" title="Filter by date">${ic('calendar',15)}<span id="nf-date-lbl"></span>
+        <input id="nf-date" type="date" value="${esc(App._notifDate||'')}" aria-label="Filter by date"></label>
       <button class="btn ghost sm" id="nf-clearfil">${ic('x',13)} Clear</button>
       <div class="spacer"></div>
       <label class="nf-selall"><input type="checkbox" id="nf-selall"> Select all</label>
@@ -1271,7 +1272,13 @@ function renderNotifications(){
       async ()=>{ try{ await api('/api/notifications/hide-bulk',{method:'POST', body:{ids}}); toast('Removed from your list','good'); loadNotifCount().then(fillNotifFeed); }catch(e){ toast(e.message,'warn'); } }, 'Delete from my list');
   };
   $('#nf-q').oninput = (e)=>{ App._notifQ=e.target.value; fillNotifFeed(); };
-  $('#nf-date').onchange = (e)=>{ App._notifDate=e.target.value; fillNotifFeed(); };
+  // the native date field is invisible on top of a readable box ("Any date" / the chosen day); tapping opens the picker
+  const dateLbl = ()=>{ const v=App._notifDate, l=$('#nf-date-lbl'); if(!l) return;
+    l.textContent = v ? new Date(v+'T12:00:00').toLocaleDateString(undefined,{day:'numeric', month:'short', year:'numeric'}) : 'Any date';
+    l.parentElement.classList.toggle('set', !!v); };
+  dateLbl();
+  $('#nf-date').onclick = e=>{ try{ e.target.showPicker(); }catch(err){} };
+  $('#nf-date').onchange = (e)=>{ App._notifDate=e.target.value; dateLbl(); fillNotifFeed(); };
   $('#nf-clearfil').onclick = ()=>{ App._notifQ=''; App._notifDate=''; renderNotifications(); };
   loadNotifCount().then(()=>{ fillNotifFeed();
     if(App._openChat){ const cid=App._openChat; App._openChat=null; setTimeout(()=>toggleThread(cid), 150); }

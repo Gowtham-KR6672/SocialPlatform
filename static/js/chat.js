@@ -6,6 +6,7 @@
 const ChatWin = { cid: null, timer: null, lastId: 0, node: null };
 
 function closeChatWindow(){
+  if(ChatWin.outside){ document.removeEventListener('pointerdown', ChatWin.outside, true); ChatWin.outside = null; }
   if(ChatWin.timer) clearInterval(ChatWin.timer);
   if(ChatWin.node) ChatWin.node.remove();
   ChatWin.cid = null; ChatWin.timer = null; ChatWin.node = null; ChatWin.lastId = 0;
@@ -83,6 +84,13 @@ function openChatWindow(cid){
     </div>`);
   document.body.appendChild(w);
   ChatWin.cid = cid; ChatWin.node = w; ChatWin.lastId = -1;
+  // phones: a tap anywhere outside the chat closes it (a chat button just switches conversation)
+  ChatWin.outside = e=>{
+    if(!ChatWin.node || !window.matchMedia || !matchMedia('(max-width:700px)').matches) return;
+    if(ChatWin.node.contains(e.target) || (e.target.closest && e.target.closest('.chat-btn, #modal-root'))) return;
+    closeChatWindow();
+  };
+  setTimeout(()=>{ if(ChatWin.node === w && ChatWin.outside) document.addEventListener('pointerdown', ChatWin.outside, true); }, 0);
   $('.msgr-win-x', w).onclick = closeChatWindow;
 
   const inp = $('.mw-in', w), files = $('.mw-files', w), attp = $('.mw-attp', w);
