@@ -345,17 +345,19 @@ function renderLanding(){
   };
   $('#lpSignIn').onclick = ()=>lpView(true);
   $('#lpTour').onclick = ()=>lpView(false);
-  // phones: tapping anywhere outside the form closes it, like a bottom sheet
+  // phones and portrait tablets: tapping anywhere outside the form closes it, like a bottom sheet
   $('.lp').addEventListener('click', e=>{
     const lp = e.currentTarget;
     if(!lp.classList.contains('m-form') || e.target.closest('.lp-card, .lp-mcta')) return;   // .lp-mcta: the tap that opened it
-    if(window.matchMedia && !matchMedia('(max-width:760px)').matches) return;
+    if(window.matchMedia && !matchMedia('(max-width:760px), (max-width:960px) and (orientation:portrait)').matches) return;
     lpView(false);
   });
   window.lpShowTour = ()=>{ const lp=$('.lp.m-form'); if(!lp) return false; lpView(false); return true; };
 
 
-  setTimeout(()=>{ const u=$('#lg-user'); if(u) u.focus(); }, 120);
+  // focus the username only with a mouse/trackpad: on touch screens it would pop the keyboard over the page
+  if(!window.matchMedia || matchMedia('(pointer:fine)').matches)
+    setTimeout(()=>{ const u=$('#lg-user'); if(u) u.focus(); }, 120);
 }
 
 /* username/password client-side rules (mirrors the server) */

@@ -2572,10 +2572,22 @@ body.logged-out .topbar{display:none}
   .lp{grid-template-columns:minmax(0,1fr) minmax(0,440px)}
   .lp-scene{display:none}
 }
-/* phones: brand on top, the concept video, and a "Sign in" button at the bottom.
+/* portrait tablets 961-1240px (iPad 13-inch): headline across the top, the concept video beside the sign-in card */
+@media (min-width:961px) and (max-width:1240px) and (orientation:portrait){
+  .lp{grid-template-columns:minmax(0,1fr) minmax(0,400px);grid-template-areas:"hero hero" "scene card";
+    align-content:center;row-gap:clamp(28px,4vh,56px)}
+  .lp-hero{grid-area:hero}
+  .lp-copy{margin:0;padding:clamp(24px,4vh,48px) 0 0}
+  .lp-lead{margin-bottom:0}
+  .lp-feats{display:none}               /* the video shows the same steps */
+  .lp-scene{display:flex;grid-area:scene}
+  .lp-scene .cv{width:100%}
+  .lp-card{grid-area:card}
+}
+/* phones and portrait tablets up to 960px (iPad 11-inch): brand on top, the concept video, and a "Sign in" button at the bottom.
    "Sign in" swaps the video for the form (.lp.m-form), which slides up from the bottom. */
 .lp-mcta,.lp-tour{display:none}
-@media (max-width:760px){
+@media (max-width:760px), (max-width:960px) and (orientation:portrait){
   .lp{display:flex;flex-direction:column;align-items:stretch;gap:14px;min-height:100vh;min-height:100dvh;
     padding:calc(env(safe-area-inset-top) + 20px) 16px calc(env(safe-area-inset-bottom) + 18px)}
   .lp::before{right:-50vw;top:-20vh;width:120vw;height:70vh}
@@ -2595,10 +2607,10 @@ body.logged-out .topbar{display:none}
   .lp-tour .ico{width:13px;height:13px}
 }
 @keyframes lpSheet{from{opacity:0;transform:translateY(40px)}}
-@media (max-width:760px) and (prefers-reduced-motion:reduce){ .lp.m-form .lp-card{animation:none} }
+@media (max-width:760px) and (prefers-reduced-motion:reduce), (max-width:960px) and (orientation:portrait) and (prefers-reduced-motion:reduce){ .lp.m-form .lp-card{animation:none} }
 
 /* the concept video on phones (portrait player): each scene's parts stack, sizes follow the player width */
-@media (max-width:760px){
+@media (max-width:760px), (max-width:960px) and (orientation:portrait){
   .cv>*{font-size:3.9cqi}
   .cv>.cv-cap{font-size:3.6cqi}
   .cv>.cv-tl{font-size:3.3cqi}
