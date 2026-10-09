@@ -2590,12 +2590,15 @@ body.logged-out .topbar{display:none}
 @media (max-width:760px), (max-width:960px) and (orientation:portrait){
   .lp{display:flex;flex-direction:column;align-items:stretch;gap:14px;min-height:100vh;min-height:100dvh;
     padding:calc(env(safe-area-inset-top) + 20px) 16px calc(env(safe-area-inset-bottom) + 18px)}
+  .in-app-ios .lp{padding-top:20px;padding-bottom:18px}   /* the iOS app already keeps the page clear of the notch and home bar */
   .lp::before{right:-50vw;top:-20vh;width:120vw;height:70vh}
   .lp::after{right:-40vw;bottom:-30vh;width:130vw;height:60vh}
   .lp-hero{align-self:stretch;width:100%;flex:none}
   .lp-copy{display:none}
   .lp-scene{display:flex;flex:1 1 auto;align-self:stretch;align-items:center;justify-content:center;min-height:0}
-  .lp-scene .cv{width:100%;max-width:520px}
+  /* the video gets narrower on short screens so brand, video and "Sign in" fit without scrolling
+     (its height is about 1.63 x its width; the rest of the page takes about 200px) */
+  .lp-scene .cv{width:min(100%, calc((var(--lp-h, 100vh) - 200px) / 1.65));max-width:520px}
   .lp-mcta{display:block;flex:none;width:100%;max-width:520px;align-self:center}
   .lp-card{display:none;align-self:center;border-radius:22px;max-width:460px;margin-top:auto}
   .lp-card-logo,.lp-card>.lp-name,.lp-card>.lp-tag{display:none}
@@ -2607,6 +2610,9 @@ body.logged-out .topbar{display:none}
   .lp-tour .ico{width:13px;height:13px}
 }
 @keyframes lpSheet{from{opacity:0;transform:translateY(40px)}}
+/* iOS app: the web view already pads the page for the status bar and home indicator, so a login page of
+   exactly one screen would scroll by that much — take those strips off its height */
+.in-app-ios .lp{--lp-h:calc(100vh - env(safe-area-inset-top) - env(safe-area-inset-bottom));min-height:var(--lp-h)}
 @media (max-width:760px) and (prefers-reduced-motion:reduce), (max-width:960px) and (orientation:portrait) and (prefers-reduced-motion:reduce){ .lp.m-form .lp-card{animation:none} }
 
 /* the concept video on phones (portrait player): each scene's parts stack, sizes follow the player width */
