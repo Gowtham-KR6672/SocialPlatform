@@ -73,15 +73,25 @@ Copy it to a phone and open it (allow "Install unknown apps" once).
 
 ### Release build for Google Play
 
-1. Create an upload key once (keep the file and passwords safe — never commit them):
+1. Create the upload key once (on a Mac or Linux):
    ```bash
-   keytool -genkey -v -keystore socialplatform-upload.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload
+   cd mobile/android
+   bash make-upload-key.sh
    ```
-2. In Android Studio: **Build → Generate Signed App Bundle / APK → Android App Bundle**,
-   choose the key, build type `release`.
+   It asks for a password, puts the key in `~/SocialPlatform-keys/` and writes
+   `android/keystore.properties` (ignored by git). Back up the key file and the password:
+   every future update must be signed with the same key.
+2. Build the signed bundle:
+   ```bash
+   cd mobile/android
+   ./gradlew bundleRelease
+   ```
+   Without `keystore.properties` the bundle is built unsigned and Play rejects it.
 3. Output: `android/app/build/outputs/bundle/release/app-release.aab`.
 4. Google Play Console → create app → upload the `.aab` to Internal testing first,
-   fill in the store listing, privacy policy URL (`/privacy` on the site), data safety form.
+   fill in the store listing, privacy policy URL (`/privacy` on the site), data safety form
+   (the account deletion web link is `/data-deletion`).
+   Store graphics are in `resources/store/` (512 px icon, 1024 × 500 feature graphic).
 5. For each new release raise `versionCode` and `versionName` in `android/app/build.gradle`.
 
 ---
@@ -107,6 +117,8 @@ In Xcode:
 
 Camera / photo library / microphone permission texts are already in
 `ios/App/App/Info.plist` (needed for picking media to upload).
+The app is iPhone-only for now (it still runs on iPads in iPhone mode); to add iPad, turn it
+back on under **General → Supported Destinations** and add 13-inch iPad screenshots.
 
 ---
 
@@ -119,22 +131,21 @@ which needs a free Firebase project — one time:
 1. https://console.firebase.google.com → **Add project** (Google Analytics not needed).
 2. **Add app → Android**, package name `com.socialplatform.app` → **Register app** →
    download **google-services.json** and put it in `mobile/android/app/`.
-3. **Project settings → Service accounts → Generate new private key** (a .json file).
+3. **Add app → iOS**, bundle ID `com.socialplatform.app` → download
+   **GoogleService-Info.plist** and put it in `mobile/ios/App/App/`. The Xcode build copies it
+   into the app when it is there (no Xcode changes needed).
+4. **Project settings → Cloud Messaging → Apple app configuration**: upload an APNs key
+   (.p8, made at developer.apple.com → Keys, with Apple Push Notifications service enabled).
+5. **Project settings → Service accounts → Generate new private key** (a .json file).
    Sign in to the website as SuperAdmin → **Notifications → Push notifications →
    Upload key** and choose that file. Keep it private — never commit it or send it by chat.
-4. Add the plugin and rebuild the app:
-   ```bash
-   cd mobile
-   npm install @capacitor/push-notifications
-   npx cap sync
-   ```
-   then build and install the app again (see Android above).
-5. In the app: **Notifications → Push notifications → Turn on** and allow notifications.
+6. Rebuild both apps (see Android and iOS above). Push Notifications is already turned on
+   in `ios/App/App/App.entitlements`; Xcode adds it to your App ID when you pick your team.
+7. In the app: **Notifications → Push notifications → Turn on** and allow notifications.
 
-Add the plugin (step 4) only after `google-services.json` is in place — without it
-Android can't start Firebase. For iOS also upload an APNs key in Firebase
-(Project settings → Cloud Messaging) and turn on **Push Notifications** under
-Signing & Capabilities in Xcode.
+Both Firebase files are ignored by git. Without them the apps still run, with push off.
+On iOS the app swaps Apple's push token for a Firebase token (`AppDelegate.swift`),
+because the server sends every push through Firebase.
 
 ## Moving the site (e.g. to AWS)
 

@@ -1752,8 +1752,8 @@ def _enforce_subscription():
     if not subscription_active(u):
         return jsonify({
             "error": "Your subscription has expired. Viewing still works, but "
-                     "creating, editing and publishing are disabled until you "
-                     "renew in Subscription & Billing.",
+                     "creating, editing and publishing are disabled until the plan "
+                     "is renewed.",
             "subscription_required": True,
         }), 402
 
@@ -7080,6 +7080,9 @@ def api_delete_user(uid):
         if admins <= 1:
             return jsonify({"error": "Can't delete the last admin account."}), 400
     db.execute("DELETE FROM users WHERE id=?", (uid,))
+    # the account's own social sign-ins and push subscriptions go with it
+    db.execute("DELETE FROM social_accounts WHERE user_id=?", (uid,))
+    db.execute("DELETE FROM push_subs WHERE user_id=?", (uid,))
     db.commit()
     add_notification(db, f'User account "{target["username"]}" was deleted'
                          f'{"" if is_self else " by "+me["username"]}.', "remove", me["username"],
@@ -7521,7 +7524,7 @@ def _legal_ctx():
     base = (os.environ.get("PUBLIC_BASE_URL") or os.environ.get("RENDER_EXTERNAL_URL") or request.host_url).rstrip("/")
     return {"company": os.environ.get("COMPANY_NAME") or "SocialPlatform",
             "contact": os.environ.get("CONTACT_EMAIL") or "",
-            "base": base, "updated": "September 2026"}
+            "base": base, "updated": "October 2026"}
 
 
 _VERIFY_FILE = re.compile(r"^(tiktok|google|pinterest)[A-Za-z0-9_.-]{0,80}\.(txt|html)$")
@@ -11291,12 +11294,11 @@ def _scheduler_loop():
                         if dleft is None:
                             continue
                         if 0 <= dleft <= SUB_RENEWAL_WARN_DAYS:
-                            add_notification(db, f"⏳ Subscription renews in {dleft} day(s). "
-                                                 f"Renew in Subscription & Billing to avoid interruption.",
+                            add_notification(db, f"⏳ Subscription renews in {dleft} day(s).",
                                              "subscription", "system", recipients=[s["id"]])
                         elif dleft < 0:
                             add_notification(db, "🔒 Subscription expired — creating, editing & "
-                                                 "publishing are disabled until you renew.",
+                                                 "publishing are disabled until the plan is renewed.",
                                              "subscription", "system", recipients=[s["id"]])
                 except Exception:
                     pass

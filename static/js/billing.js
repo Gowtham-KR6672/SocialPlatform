@@ -5,9 +5,19 @@
    - SuperAdmin sets the per-seat price + payout account.
    - On expiry the account becomes read-only (enforced server-side);
      when renewal is near the dashboard shows an alert style.
+   - Store apps (Android / iOS) never sell or price plans: Apple and Google
+     require their own in-app purchase for that, so plans are bought by the
+     organisation on the website and the apps only show the plan's state.
    ============================================================ */
+const inStoreApp = ()=> document.documentElement.classList.contains('in-app');   // set by native.js
+
 async function renderBilling(){
   const c = $('#pageContent'); if(!c) return;
+  if(inStoreApp()){
+    c.innerHTML = `<div class="panel-head"><h2>Subscription</h2>
+        <p class="sub">Your organisation's administrator manages the plan.</p></div>`;
+    return;
+  }
   c.innerHTML = `<div class="panel-head"><h2>Subscription &amp; Billing</h2>
       <p class="sub">Per-seat monthly plan. Payments are credited to the Super Admin's configured account.</p></div>
     <div id="billBody"><div class="loading">Loading…</div></div>`;
@@ -129,15 +139,16 @@ function applySubscriptionState(){
   const old = document.getElementById('subStateBanner'); if(old) old.remove();
   if(!s) return;
   let html = '';
+  const app = inStoreApp();   // no renew buttons in the store apps (see the top of this file)
   if(s.status==='expired'){
     document.body.classList.add('sub-locked');
     html = `<div class="sub-banner lock" id="subStateBanner">${ic('lock',14)} <b>Subscription expired.</b>
       Creating, editing, updating &amp; publishing are disabled — viewing still works.
-      <button class="btn sm pale" id="subGoBilling">Renew now</button></div>`;
+      ${app ? 'Your organisation\'s administrator manages the plan.' : '<button class="btn sm pale" id="subGoBilling">Renew now</button>'}</div>`;
   }else if(s.renewing_soon){
     document.body.classList.add('sub-warn');
     html = `<div class="sub-banner warn" id="subStateBanner">${ic('hourglass',14)} <b>Renewal approaching</b> — your plan renews in
-      ${s.days_left} day(s). <button class="btn sm" id="subGoBilling">Review &amp; renew</button></div>`;
+      ${s.days_left} day(s).${app ? '' : ' <button class="btn sm" id="subGoBilling">Review &amp; renew</button>'}</div>`;
   }
   if(html){
     host.insertAdjacentHTML('afterbegin', html);

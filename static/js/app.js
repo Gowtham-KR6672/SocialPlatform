@@ -1072,8 +1072,14 @@ function openProfile(){
       <hr class="sep">
       <label class="f">${ic('shield',14)} Two-factor login</label>
       <div id="pf-2fa"></div>
+      ${u.is_super ? '' : `<hr class="sep">
+      <label class="f">Delete account</label>
+      <p class="sub" style="margin:0 0 8px">Permanently removes your account and signs you out.</p>
+      <button class="btn danger sm" id="pf-del">Delete my account</button>`}
     </div></div>`);
   openModal(m);
+  // account deletion inside the app (required by Google Play and the App Store)
+  const del = $('#pf-del',m); if(del) del.onclick = ()=>{ closeModal(); deleteUser(u.id, true); };
   $('#pf-save',m).onclick = async ()=>{
     $('#pf-err',m).textContent='';
     try{ const r = await api('/api/me/profile',{method:'POST', body:{display_name:$('#pf-name',m).value, email:$('#pf-email',m).value}});

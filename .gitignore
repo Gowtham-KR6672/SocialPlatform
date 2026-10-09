@@ -32,3 +32,6 @@ mobile/dist/
 mobile/android/app/google-services.json
 mobile/ios/App/App/GoogleService-Info.plist
 *firebase-adminsdk*.json
+
+# Play upload key settings (holds the key password)
+mobile/android/keystore.properties
