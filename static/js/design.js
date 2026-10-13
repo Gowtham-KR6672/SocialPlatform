@@ -37,7 +37,7 @@ function heroArt(icon){
       <linearGradient id="${g}a" x1="0" y1="0" x2="1" y2="1"><stop offset="0" style="stop-color:var(--acc-2)"/><stop offset="1" style="stop-color:var(--acc)"/></linearGradient>
       <linearGradient id="${g}b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".95"/><stop offset="1" stop-color="#fff" stop-opacity=".5"/></linearGradient>
       <radialGradient id="${g}c"><stop offset="0" style="stop-color:var(--acc);stop-opacity:.22"/><stop offset="1" style="stop-color:var(--acc);stop-opacity:0"/></radialGradient>
-      <filter id="${g}s" x="-40%" y="-40%" width="180%" height="190%"><feDropShadow dx="0" dy="10" stdDeviation="9" flood-color="#2b1f7a" flood-opacity=".16"/></filter>
+      <filter id="${g}s" x="-40%" y="-40%" width="180%" height="190%"><feDropShadow dx="0" dy="10" stdDeviation="9" flood-color="#3a0100" flood-opacity=".16"/></filter>
     </defs>
     <ellipse cx="258" cy="92" rx="200" ry="86" fill="url(#${g}c)"/>
     <path d="M10 160 C 80 160, 105 104, 168 106" ${acc} stroke-width="2" stroke-linecap="round" opacity=".35"/>

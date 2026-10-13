@@ -1944,7 +1944,7 @@ def api_2fa_setup():
     secret = totp_new_secret()
     db.execute("UPDATE users SET totp_pending=? WHERE id=?", (enc(secret), u["id"]))
     db.commit()
-    issuer = urllib.parse.quote(os.environ.get("COMPANY_NAME") or "SocialPlatform")
+    issuer = urllib.parse.quote(os.environ.get("COMPANY_NAME") or "SoLo")
     uri = (f"otpauth://totp/{issuer}:{urllib.parse.quote(u['username'])}?secret={secret}"
            f"&issuer={issuer}&digits=6&period=30")
     svg = ""
@@ -4346,7 +4346,7 @@ def send_alert(db, user_ids, title, message, link="", event="alert", payload=Non
 def _bg_email(to, subject, body):
     try:
         db = db_connect()
-        send_email(db, to, "[Social Platform] " + subject, body)
+        send_email(db, to, "[SoLo] " + subject, body)
         db.close()
     except Exception:
         pass
@@ -5638,7 +5638,7 @@ def _ai_complete(provider, key, model, text, images=(), max_tokens=None, video=N
         else:
             url = "https://openrouter.ai/api/v1/chat/completions"
             hdr = {"HTTP-Referer": os.environ.get("RENDER_EXTERNAL_URL") or "https://github.com/Gowtham-KR6672/SocialPlatform",
-                   "X-Title": os.environ.get("COMPANY_NAME") or "SocialPlatform"}
+                   "X-Title": os.environ.get("COMPANY_NAME") or "SoLo"}
             body["max_tokens"] = max_tokens or 8000
             if auto:                      # free models are often busy: let OpenRouter fall back
                 body["models"] = _auto_models("openrouter", key, vision=see)
@@ -7635,7 +7635,7 @@ def _ingest_webhook_dm(db, obj, mev):
 # ---- Legal pages required by Meta / Google / TikTok app review ----------------
 def _legal_ctx():
     base = (os.environ.get("PUBLIC_BASE_URL") or os.environ.get("RENDER_EXTERNAL_URL") or request.host_url).rstrip("/")
-    return {"company": os.environ.get("COMPANY_NAME") or "SocialPlatform",
+    return {"company": os.environ.get("COMPANY_NAME") or "SoLo",
             "contact": os.environ.get("CONTACT_EMAIL") or "",
             "base": base, "updated": "October 2026"}
 
@@ -7721,13 +7721,13 @@ def _oauth_popup_close(message, ok=False):
     color = "#0b8043" if ok else "#c5221f"
     return (f"""<!doctype html><html><head><meta charset="utf-8">
 <title>Connection</title></head>
-<body style="font-family:Segoe UI,Arial,sans-serif;background:#f4f8fd;
+<body style="font-family:Segoe UI,Arial,sans-serif;background:#fcf9f2;
              display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
-<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:28px 34px;
-            box-shadow:0 1px 3px rgba(16,24,40,.08);text-align:center;max-width:360px">
+<div style="background:#fff;border:1px solid #efe7da;border-radius:12px;padding:28px 34px;
+            box-shadow:0 1px 3px rgba(70,20,10,.08);text-align:center;max-width:360px">
   <div style="font-size:15px;color:{color};font-weight:600;margin-bottom:6px">
     {'✓ Connected' if ok else 'Connection problem'}</div>
-  <div style="color:#475569;font-size:13px">{message}</div>
+  <div style="color:#5b4541;font-size:13px">{message}</div>
 </div>
 <script>
   try {{ if (window.opener) {{ window.opener.postMessage({{sdb_oauth:true, ok:{str(ok).lower()}}}, "*"); }} }} catch(e) {{}}
@@ -9113,7 +9113,7 @@ def api_brands():
         if not name:
             return jsonify({"error": "Enter a brand name."}), 400
         cur = db.execute("INSERT INTO brands (owner_id, name, color, created_at) VALUES (?,?,?,?)",
-                         (owner, name[:60], (d.get("color") or "#2f7bff")[:9], _now()))
+                         (owner, name[:60], (d.get("color") or "#e30010")[:9], _now()))
         db.commit()
         log_activity(db, u, "brand_created", "brand", cur.lastrowid, name)
     q = "SELECT * FROM brands" + ("" if is_super(u) else " WHERE owner_id=?") + " ORDER BY name"
@@ -9236,7 +9236,7 @@ def api_alert_settings():
 def api_alert_test():
     u = require_login()
     db = get_db()
-    send_alert(db, [u["id"]], "Test alert", "🔔 Test alert from Social Platform — your alerts are working.",
+    send_alert(db, [u["id"]], "Test alert", "🔔 Test alert from SoLo — your alerts are working.",
                event="test")
     return jsonify({"ok": True})
 
@@ -9938,7 +9938,7 @@ def api_bio():
                 code, _ = create_short_link(db, ws, url, (lk.get("label") or url)[:120], None, "bio",
                                             "linkinbio", "social", "bio", _slugify(lk.get("label") or "link"))
             links.append({"label": (lk.get("label") or url)[:120], "url": url, "code": code})
-        vals = (slug, (d.get("title") or "")[:120], (d.get("bio") or "")[:500], (d.get("theme") or "#2f7bff")[:9],
+        vals = (slug, (d.get("title") or "")[:120], (d.get("bio") or "")[:500], (d.get("theme") or "#e30010")[:9],
                 json.dumps(links), 1 if d.get("show_posts", True) else 0, _now())
         if page:
             db.execute("UPDATE bio_pages SET slug=?, title=?, bio=?, theme=?, links=?, show_posts=?, updated_at=? "
@@ -10004,7 +10004,7 @@ def bio_public(slug):
                 break
     kit = _kit_row(db, page["workspace_id"], page["brand_id"]) or {}
     return render_template("bio.html", page=dict(page), links=_jl(page["links"], []), posts=posts,
-                           logo=kit.get("logo"), company=os.environ.get("COMPANY_NAME") or "SocialPlatform")
+                           logo=kit.get("logo"), company=os.environ.get("COMPANY_NAME") or "SoLo")
 
 
 # =========================================================================== #
@@ -10104,7 +10104,7 @@ def build_monthly_pdf(cur, prev, accts, kit, start, company):
             return t.encode("latin-1", "replace").decode("latin-1")
         return "".join(ch for ch in t if ch in " \n" or ord(ch) in cps) if cps else t
 
-    def rgb(hexv, fallback=(47, 123, 255)):
+    def rgb(hexv, fallback=(227, 0, 16)):
         try:
             h = (hexv or "").lstrip("#")
             return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4)) if len(h) == 6 else fallback
@@ -10204,7 +10204,7 @@ def api_monthly_report():
     brand = _rget(u, "active_brand_id")
     cur, prev, accts, kit, start = monthly_report_data(db, ws_member_ids(db, u), month, billing_user_id(u), brand)
     company = (db.execute("SELECT name FROM brands WHERE id=?", (brand,)).fetchone() or {"name": None})["name"] if brand else None
-    buf = build_monthly_pdf(cur, prev, accts, kit, start, company or os.environ.get("COMPANY_NAME") or "SocialPlatform")
+    buf = build_monthly_pdf(cur, prev, accts, kit, start, company or os.environ.get("COMPANY_NAME") or "SoLo")
     return send_file(buf, as_attachment=True, download_name=f"monthly-report-{month}.pdf", mimetype="application/pdf")
 
 
@@ -10219,7 +10219,7 @@ def api_monthly_report_email():
         return jsonify({"error": "Enter an email address."}), 400
     cur, prev, accts, kit, start = monthly_report_data(db, ws_member_ids(db, u), month, billing_user_id(u),
                                                        _rget(u, "active_brand_id"))
-    pdf = build_monthly_pdf(cur, prev, accts, kit, start, os.environ.get("COMPANY_NAME") or "SocialPlatform").getvalue()
+    pdf = build_monthly_pdf(cur, prev, accts, kit, start, os.environ.get("COMPANY_NAME") or "SoLo").getvalue()
     ok, msg = send_email(db, to, f"Monthly social media report — {start.strftime('%B %Y')}",
                          f"Attached: your social media performance for {start.strftime('%B %Y')}.",
                          [(f"monthly-report-{month}.pdf", pdf, "application/pdf")])
@@ -10254,7 +10254,7 @@ def _monthly_reports():
                 continue
             ud = dict(urow)
             cur, prev, accts, kit, start = monthly_report_data(db, ws_member_ids(db, ud), last, billing_user_id(ud))
-            pdf = build_monthly_pdf(cur, prev, accts, kit, start, os.environ.get("COMPANY_NAME") or "SocialPlatform").getvalue()
+            pdf = build_monthly_pdf(cur, prev, accts, kit, start, os.environ.get("COMPANY_NAME") or "SoLo").getvalue()
             ok, _ = send_email(db, to, f"Monthly social media report — {start.strftime('%B %Y')}",
                                f"Attached: your social media performance for {start.strftime('%B %Y')}.",
                                [(f"monthly-report-{last}.pdf", pdf, "application/pdf")])
@@ -10694,7 +10694,7 @@ def api_loans_channel_test():
     d = request.get_json(force=True) or {}
     ch, to = d.get("channel"), (d.get("to") or "").strip()
     cfg = _lr_channel(db, ws, ch)
-    who = _lr_settings(db, ws).get("company") or "Social Platform"
+    who = _lr_settings(db, ws).get("company") or "SoLo"
     text = f"Test message from {who}: your {MSG.CHANNEL_LABEL.get(ch, '')} channel works."
     if ch == "sms":
         ok, info = MSG.send_sms(cfg, to, text)
@@ -11187,7 +11187,7 @@ def push_to_users(db, user_ids, title, body, link="", tag="", category="notifica
         return 0
     priv, pub = _push_vapid(db) if any(x["kind"] == "web" for x in subs) else (None, None)
     sa = _push_fcm_sa(db) if any(x["kind"] == "fcm" for x in subs) else None
-    data = {"title": (title or "Social Platform")[:120], "body": (body or "")[:240], "link": link or "",
+    data = {"title": (title or "SoLo")[:120], "body": (body or "")[:240], "link": link or "",
             "tag": tag or "", "url": "/?open=" + urllib.parse.quote(link or "notifications")}
     threading.Thread(target=_push_send_all, args=(subs, data, priv, pub, sa, _push_contact()),
                      daemon=True).start()
@@ -11228,7 +11228,7 @@ def _push_notification(db, ids, message, link, actor):
         if row:
             ids.discard(row["id"])
     if ids:
-        push_to_users(db, ids, "Social Platform", message, link or "notifications",
+        push_to_users(db, ids, "SoLo", message, link or "notifications",
                       tag="n-" + (link or "notifications"), category="notifications")
 
 
@@ -11343,7 +11343,7 @@ def api_push_prefs():
 def api_push_test():
     u = require_login()
     db = get_db()
-    n = push_to_users(db, [u["id"]], "Social Platform", "Push notifications are working on this device. 🎉",
+    n = push_to_users(db, [u["id"]], "SoLo", "Push notifications are working on this device. 🎉",
                       "notifications", tag="test", category=None)
     if not n:
         return jsonify({"error": "Push isn't switched on for any of your devices yet."}), 400

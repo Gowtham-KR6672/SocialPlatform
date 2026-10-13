@@ -34,7 +34,7 @@
     <div class="cv-sc s1">
       <div class="s1-ring">
         ${PLATS.map((k,i)=>`<span class="s1-line" style="--a:${i*45}deg;--d:${.2+i*.16}s"></span>`).join('')}
-        <span class="s1-hub"><img src="/static/img/logo-160.png" alt=""></span>
+        <span class="s1-hub"><img src="/static/img/solo-mark.png" alt=""></span>
         ${PLATS.map((k,i)=>`<span class="s1-node" style="--a:${i*45}deg;--d:${.2+i*.16}s"><span class="s1-pop">${P(k,20)}
           <i class="s1-ok">${I('check',9)}</i></span></span>`).join('')}
       </div>
@@ -161,7 +161,7 @@
   <div class="cv" data-step="0" style="--dur:${SCENE_SECONDS}s">
     <div class="cv-win">
       <div class="cv-bar" aria-hidden="true"><span class="cv-dots"><i></i><i></i><i></i></span>
-        <span class="cv-url">${I('lock',10)} socialplatform.app</span><span class="cv-sp"></span><span class="cv-count">1 / ${STEPS.length}</span></div>
+        <span class="cv-url">${I('lock',10)} SoLo by Fairway</span><span class="cv-sp"></span><span class="cv-count">1 / ${STEPS.length}</span></div>
       <div class="cv-scr" aria-hidden="true">
         ${[s1,s2,s3,s4,s5,s6,s7].map(f=>f()).join('')}
         <span class="cv-cursor"><svg viewBox="0 0 24 24"><path d="M5 3l13 7.5-5.6 1.4 3.4 6.4-2.6 1.4-3.4-6.4L5.6 17z"/></svg><i></i></span>

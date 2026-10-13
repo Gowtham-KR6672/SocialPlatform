@@ -101,7 +101,7 @@ async function renderBio(){
         <div class="hint">Put this address in your Instagram / TikTok bio.</div>`:'<div class="hint">Save to create your page.</div>'}
       <div class="pe-grid"><div><label class="f">Page address</label><input class="f" id="bSlug" value="${esc(page?page.slug:'')}" placeholder="yourbrand"></div>
         <div><label class="f">Title</label><input class="f" id="bTitle" value="${esc(page?page.title:'')}" placeholder="Your brand"></div>
-        <div><label class="f">Accent colour</label><input type="color" class="f" id="bTheme" value="${esc(page?page.theme:'#2f7bff')}"></div></div>
+        <div><label class="f">Accent colour</label><input type="color" class="f" id="bTheme" value="${esc(page?page.theme:'#e30010')}"></div></div>
       <label class="f">Short bio</label><textarea class="f" id="bBio" style="min-height:60px">${esc(page?page.bio:'')}</textarea>
       <label class="f">Links</label><div id="bLinks">${links.map((l,i)=>`<div class="row bio-link" style="gap:6px;margin-bottom:6px">
           <input class="f" data-lab="${i}" value="${esc(l.label||'')}" placeholder="Button text"><input class="f" data-url="${i}" value="${esc(l.url||'')}" placeholder="https://…">
@@ -264,8 +264,8 @@ async function renderBrandKit(host){
         <div class="bk-logo">${k.logo?`<img src="/uploads/${encodeURIComponent(k.logo)}" alt="Logo">`:`<div class="bk-ph">${ic('image',24)}</div>`}
           <label class="btn ghost sm" style="cursor:pointer">${ic('upload',13)} Logo<input type="file" id="bkLogo" accept="image/png,image/jpeg" style="display:none"></label></div>
         <div class="pe-grid" style="flex:1">
-          <div><label class="f">Primary colour</label><input type="color" class="f" id="bkC1" value="${esc(k.color_primary||'#2f7bff')}"></div>
-          <div><label class="f">Secondary colour</label><input type="color" class="f" id="bkC2" value="${esc(k.color_secondary||'#12b886')}"></div>
+          <div><label class="f">Primary colour</label><input type="color" class="f" id="bkC1" value="${esc(k.color_primary||'#e30010')}"></div>
+          <div><label class="f">Secondary colour</label><input type="color" class="f" id="bkC2" value="${esc(k.color_secondary||'#570100')}"></div>
           <div><label class="f">Website</label><input class="f" id="bkWeb" value="${esc(k.website||'')}" placeholder="https://…"></div>
         </div></div>
       <label class="f">Tone of voice</label><textarea class="f" id="bkTone" style="min-height:60px" placeholder="e.g. Friendly and upbeat, short sentences, speaks to young professionals, light emoji use">${esc(k.tone||'')}</textarea>

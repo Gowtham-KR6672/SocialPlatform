@@ -9,7 +9,7 @@ self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
 self.addEventListener('push', e => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch (err) { d = {body: e.data ? e.data.text() : ''}; }
-  const title = d.title || 'Social Platform';
+  const title = d.title || 'SoLo';
   e.waitUntil(self.registration.showNotification(title, {
     body: d.body || '',
     icon: '/static/img/apple-touch-icon.png',

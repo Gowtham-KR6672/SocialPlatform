@@ -19,7 +19,7 @@ window.App = App;
 // Single fixed theme — the cosmic-glass look from the login reference. The
 // theme switcher has been removed; the whole app uses this one palette.
 const DEFAULT_THEME = 'cosmic';
-const THEMES = [{id:'cosmic', name:'Cosmic', c:'#8b5cf6', dark:true}];
+const THEMES = [{id:'cosmic', name:'SoLo', c:'#e30010', dark:false}];
 function currentTheme(){ return DEFAULT_THEME; }
 function applyTheme(){
   document.body.dataset.theme = DEFAULT_THEME;
@@ -266,33 +266,35 @@ function renderLanding(){
   document.body.classList.add('logged-out');
   const v = $('#view');
   const brandHTML = (cls)=>`<div class="lp-brand ${cls}">
-      <img src="/static/img/logo.png" alt="" width="512" height="377">
-      <div><div class="lp-name">Social <span>Platform</span></div>
-        <div class="lp-tag">Plan, produce &amp; schedule your social content.</div></div></div>`;
+      <img src="/static/img/solo-logo.png" alt="SoLo" width="712" height="268">
+      <div><div class="lp-by">by <b>Fairway</b></div>
+        <div class="lp-tag">The social office for loan officers.</div></div></div>`;
   v.innerHTML = `
     <div class="lp">
       <section class="lp-hero">
         ${brandHTML('lp-brand-top')}
         <div class="lp-copy">
-          <div class="lp-eyebrow">Grow your brand</div>
-          <h1 class="lp-h1">All Your<br><span>Social Media Marketing</span><br>in One Place</h1>
-          <p class="lp-lead">Plan, create, schedule and analyze your social media content across multiple
-            platforms — faster, smarter and more effectively.</p>
+          <div class="lp-eyebrow">Independence for loan officers</div>
+          <h1 class="lp-h1">Go solo.<br><span>Never alone.</span></h1>
+          <p class="lp-lead">One app to create, approve, post, reply and follow up with borrowers, with
+            Fairway’s brand and compliance support behind every post.</p>
           <div class="lp-feats">
-            <div class="lp-feat"><span class="lf-ic c1">${ic('calendar',22)}</span><b>Plan</b><small>Organize your content calendar</small></div>
-            <div class="lp-feat"><span class="lf-ic c2">${ic('pen',22)}</span><b>Create</b><small>Design engaging content</small></div>
-            <div class="lp-feat"><span class="lf-ic c3">${ic('send',22)}</span><b>Schedule</b><small>Publish at the right time</small></div>
-            <div class="lp-feat"><span class="lf-ic c4">${ic('bars',22)}</span><b>Analyze</b><small>Track growth and performance</small></div>
+            <div class="lp-feat"><span class="lf-ic c1">${ic('pen',22)}</span><b>Create</b><small>AI captions in the Fairway voice</small></div>
+            <div class="lp-feat"><span class="lf-ic c2">${ic('check',22)}</span><b>Approve</b><small>Compliance review built in</small></div>
+            <div class="lp-feat"><span class="lf-ic c3">${ic('send',22)}</span><b>Post</b><small>8 networks, at the best time</small></div>
+            <div class="lp-feat"><span class="lf-ic c4">${ic('mail',22)}</span><b>Reply</b><small>Every comment in one inbox</small></div>
+            <div class="lp-feat"><span class="lf-ic c5">${ic('bars',22)}</span><b>Report</b><small>Monthly growth report</small></div>
+            <div class="lp-feat"><span class="lf-ic c6">${ic('bell',22)}</span><b>Remind</b><small>SMS, WhatsApp &amp; email</small></div>
           </div>
         </div>
       </section>
 
-      <div class="lp-scene" role="region" aria-label="How Social Platform works">${typeof loginScene==='function' ? loginScene() : ''}</div>
+      <div class="lp-scene" role="region" aria-label="How SoLo works">${typeof loginScene==='function' ? loginScene() : ''}</div>
       <section class="lp-card" aria-label="Sign in">
         <button type="button" class="lp-tour" id="lpTour">${ic('play',13)} Watch how it works</button>
-        <img class="lp-card-logo" src="/static/img/logo.png" alt="Social Platform logo" width="512" height="377">
-        <div class="lp-name">Social <span>Platform</span></div>
-        <div class="lp-tag">Plan, produce &amp; schedule your social content.</div>
+        <img class="lp-card-logo" src="/static/img/solo-logo.png" alt="SoLo logo" width="712" height="268">
+        <div class="lp-by">by <b>Fairway</b></div>
+        <div class="lp-tag">The social office for loan officers.</div>
         <h2 class="lp-welcome">Welcome Back</h2>
         <p class="lp-sub">Sign in to your account to continue</p>
 
@@ -1161,7 +1163,7 @@ async function deleteTestAccounts(){
 function confirmBox(title, body, onYes, yesLabel='Yes, continue'){
   const m = el(`<div class="modal" style="max-width:420px">
     <div class="modal-head"><h3>${esc(title)}</h3><button class="x" onclick="closeModal()" aria-label="Close">${ic('x',18)}</button></div>
-    <div class="modal-body"><p style="margin:0;color:#374a5e">${esc(body)}</p></div>
+    <div class="modal-body"><p style="margin:0;color:var(--ink-2)">${esc(body)}</p></div>
     <div class="modal-foot">
       <button class="btn ghost" onclick="closeModal()">Cancel</button>
       <button class="btn danger" id="cfx">${esc(yesLabel)}</button>

@@ -133,14 +133,14 @@ function openWorkspaceModal(w){
 }
 
 function showWorkspaceCreds(company, user, pass){
-  showLoginDetails('Workspace created', company, user, pass, `Your ${company} workspace on Social Platform`,
+  showLoginDetails('Workspace created', company, user, pass, `Your ${company} workspace on SoLo`,
                    'Send these sign-in details to the client. The password isn\'t shown again.');
 }
 
 /* Sign-in details with a copy button (new workspaces, new users, password resets) */
 function showLoginDetails(title, name, user, pass, heading, note){
   const site = location.origin;
-  const text = `${heading || ('Your Social Platform login, ' + name)}\nSign in: ${site}\nUser ID: ${user}\nPassword: ${pass}\nPlease change your password after your first login (My profile).`;
+  const text = `${heading || ('Your SoLo login, ' + name)}\nSign in: ${site}\nUser ID: ${user}\nPassword: ${pass}\nPlease change your password after your first login (My profile).`;
   const m = el(`<div class="modal" style="max-width:480px">
     <div class="modal-head"><h3>${ic('check',18)} ${esc(title)}</h3><button class="x" onclick="closeModal()" aria-label="Close">${ic('x',18)}</button></div>
     <div class="modal-body">

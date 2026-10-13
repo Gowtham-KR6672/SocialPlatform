@@ -1,6 +1,6 @@
-# Social Platform — Android & iOS apps
+# SoLo — Android & iOS apps
 
-Native app shells (Capacitor 8) around the live Social Platform website.
+Native app shells (Capacitor 8) around the live SoLo website.
 The apps load the site set in `capacitor.config.json` → `server.url`, so every
 change you deploy to the website shows up in the apps straight away — no app
 store update needed unless you change the native side (icons, name, plugins).
@@ -10,7 +10,7 @@ mobile/
 ├── android/            Android Studio project (Gradle)
 ├── ios/                Xcode project (Swift Package Manager)
 ├── www/                splash page + offline page bundled inside the app
-├── resources/          1024px logo + make_icons.py (regenerates all icons/splashes)
+├── resources/          logo sources + make_icons.py (regenerates all icons/splashes)
 ├── capacitor.config.json
 └── package.json
 ```
@@ -161,7 +161,13 @@ Also add the new domain to each social platform's redirect URIs (see the AWS gui
 
 ## Changing the icon / splash screen
 
-Replace `resources/logo-1024.png` (square, 1024×1024 PNG), then:
+The sources are in `resources/`:
+
+* `icon-1024.png` — the square app icon (1024×1024, no transparency; iOS and Android round the corners)
+* `mark.png` — the "S" on a transparent background (Android's adaptive icon)
+* `wordmark.png` — the SOLO wordmark on a transparent background (splash screens)
+
+Replace any of them, then:
 
 ```bash
 python resources/make_icons.py

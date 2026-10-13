@@ -312,7 +312,7 @@ async function renderTeam(){
     <div class="card glass"><h4>${ic('building',15)} Brands</h4>
       <p class="sub">Each brand keeps its own posts and can have its own connected accounts: switch brand in the top bar, then connect accounts in Setup.</p>
       ${u.is_subuser?'':`<div class="row" style="gap:8px;margin:10px 0"><input class="f" id="brName" placeholder="Brand / client name" style="max-width:260px">
-        <input type="color" id="brColor" value="#2f7bff" title="Colour"><button class="btn sm" id="brAdd">${ic('plus',14)} Add brand</button></div>`}
+        <input type="color" id="brColor" value="#e30010" title="Colour"><button class="btn sm" id="brAdd">${ic('plus',14)} Add brand</button></div>`}
       <div id="brList"><div class="loading">Loading…</div></div></div>
     <div class="card glass" id="bkCard"><div class="loading">Loading…</div></div>
     ${u.is_admin?`<div class="card glass"><h4>${ic('shield',15)} Publishing permissions</h4>
@@ -355,7 +355,7 @@ async function renderTeam(){
   const loadBrands = async ()=>{
     const d = await api('/api/brands');
     App._brands = d.brands; renderBrandKit($('#bkCard'));
-    $('#brList').innerHTML = d.brands.length ? d.brands.map(b=>`<div class="br-row"><span class="br-dot" style="background:${esc(b.color||'#2f7bff')}"></span>
+    $('#brList').innerHTML = d.brands.length ? d.brands.map(b=>`<div class="br-row"><span class="br-dot" style="background:${esc(b.color||'#e30010')}"></span>
         <b>${esc(b.name)}</b> ${String(b.id)===String(d.active_brand_id)?'<span class="chip completed">active</span>':''}
         <span class="spacer"></span>
         <button class="btn ghost xs" data-use="${b.id}">Switch to</button>

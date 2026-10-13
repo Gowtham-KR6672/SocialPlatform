@@ -20,7 +20,7 @@ function showWelcomePopup(){
   const m = el(`<div class="modal ob-welcome">
     <div class="modal-body" style="text-align:center;padding:26px 24px">
       <div class="ob-badge">${ic('sparkles',28)}</div>
-      <h2 style="margin:10px 0 6px">Welcome to Social Platform</h2>
+      <h2 style="margin:10px 0 6px">Welcome to SoLo</h2>
       <p class="sub" style="max-width:420px;margin:0 auto 18px">
         Let's get you set up in a couple of minutes — complete your profile and
         connect the social accounts you want to publish to.</p>
@@ -116,7 +116,7 @@ function drawWizardStep(m){
     body.innerHTML = `<div style="text-align:center;padding:14px 0">
       <div class="ob-badge">${ic('check',28)}</div>
       <h3 style="margin:8px 0 4px">You're all set!</h3>
-      <p class="sub">Click Finish to start using Social Platform. You can connect more accounts anytime from the Setup panel.</p></div>`;
+      <p class="sub">Click Finish to start using SoLo. You can connect more accounts anytime from the Setup panel.</p></div>`;
   }
 }
 

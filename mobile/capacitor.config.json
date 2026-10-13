@@ -1,6 +1,6 @@
 {
   "appId": "com.socialplatform.app",
-  "appName": "Social Platform",
+  "appName": "SoLo",
   "webDir": "www",
   "server": {
     "url": "https://socialplatform-1hab.onrender.com",
@@ -8,7 +8,7 @@
     "errorPath": "offline.html"
   },
   "appendUserAgent": "SocialPlatformApp",
-  "backgroundColor": "#f7f5fe",
+  "backgroundColor": "#fcf9f2",
   "android": {
     "path": "android",
     "allowMixedContent": false,
@@ -23,13 +23,13 @@
     "SplashScreen": {
       "launchShowDuration": 1500,
       "launchAutoHide": true,
-      "backgroundColor": "#f7f5fe",
+      "backgroundColor": "#fef8ec",
       "showSpinner": false,
       "androidScaleType": "CENTER_INSIDE"
     },
     "StatusBar": {
       "style": "LIGHT",
-      "backgroundColor": "#f7f5fe",
+      "backgroundColor": "#fffdf8",
       "overlaysWebView": false
     },
     "PushNotifications": {

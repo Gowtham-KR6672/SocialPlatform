@@ -1,48 +1,69 @@
-"""Regenerate the Android and iOS app icons and splash screens from resources/logo-1024.png.
+"""Regenerate the Android and iOS app icons, splash screens and the Play Store icon.
+
+Sources in resources/:
+  icon-1024.png  square app icon, no transparency (iOS and Android round the corners themselves)
+  mark.png       the "S" on a transparent background (Android adaptive icon foreground)
+  wordmark.png   the SOLO wordmark on a transparent background (splash screens)
+
 Run from the mobile/ folder:  python resources/make_icons.py"""
 import glob, os
-from PIL import Image
+from PIL import Image, ImageDraw
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-logo = Image.open(os.path.join(HERE, "logo-1024.png")).convert("RGBA")
-logo = logo.crop(logo.getbbox())                      # trim transparent margins
-SPLASH_BG = (247, 245, 254, 255)                      # same lavender as the site's login page
+CREAM = (254, 248, 236, 255)    # icon background; same as android/.../values/ic_launcher_background.xml
 
 
-def placed(size, frac, bg):
-    """Square canvas with the logo centred, its longest side = frac of the canvas."""
+def art(name):
+    im = Image.open(os.path.join(HERE, name)).convert("RGBA")
+    return im.crop(im.getbbox())                        # trim transparent margins
+
+
+icon = Image.open(os.path.join(HERE, "icon-1024.png")).convert("RGB")
+mark, word = art("mark.png"), art("wordmark.png")
+
+
+def placed(img, size, frac, bg):
+    """Canvas with img centred, its longest side = frac of the canvas's shorter side."""
     w, h = size
     im = Image.new("RGBA", size, bg)
-    s = frac * min(w, h) / max(logo.size)
-    lg = logo.resize((max(1, int(logo.width * s)), max(1, int(logo.height * s))), Image.LANCZOS)
+    s = frac * min(w, h) / max(img.size)
+    lg = img.resize((max(1, int(img.width * s)), max(1, int(img.height * s))), Image.LANCZOS)
     im.alpha_composite(lg, ((w - lg.width) // 2, (h - lg.height) // 2))
+    return im
+
+
+def shaped(px, round_):
+    """The square icon with a circle or rounded-square mask (older Android launchers)."""
+    big = px * 4
+    mask = Image.new("L", (big, big), 0)
+    if round_:
+        ImageDraw.Draw(mask).ellipse((0, 0, big - 1, big - 1), fill=255)
+    else:
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, big - 1, big - 1), radius=int(big * 0.2), fill=255)
+    im = icon.resize((px, px), Image.LANCZOS).convert("RGBA")
+    im.putalpha(mask.resize((px, px), Image.LANCZOS))
     return im
 
 
 res = os.path.join(ROOT, "android", "app", "src", "main", "res")
 for d, px in {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}.items():
     folder = os.path.join(res, f"mipmap-{d}")
-    placed((px, px), 0.78, (255, 255, 255, 255)).convert("RGB").save(os.path.join(folder, "ic_launcher.png"))
-    # round icon: same art, circular mask
-    rnd = placed((px, px), 0.70, (255, 255, 255, 255))
-    mask = Image.new("L", (px * 4, px * 4), 0)
-    from PIL import ImageDraw
-    ImageDraw.Draw(mask).ellipse((0, 0, px * 4 - 1, px * 4 - 1), fill=255)
-    rnd.putalpha(mask.resize((px, px), Image.LANCZOS))
-    rnd.save(os.path.join(folder, "ic_launcher_round.png"))
-    # adaptive icon foreground: 108dp canvas, art inside the 66dp safe zone
+    shaped(px, False).save(os.path.join(folder, "ic_launcher.png"))
+    shaped(px, True).save(os.path.join(folder, "ic_launcher_round.png"))
+    # adaptive icon foreground: 108dp canvas, the S inside the 66dp safe zone
     fg = round(px * 108 / 48)
-    placed((fg, fg), 0.56, (0, 0, 0, 0)).save(os.path.join(folder, "ic_launcher_foreground.png"))
+    placed(mark, (fg, fg), 0.47, (0, 0, 0, 0)).save(os.path.join(folder, "ic_launcher_foreground.png"))
 
 for path in glob.glob(os.path.join(res, "drawable*", "splash.png")):
     w, h = Image.open(path).size
-    placed((w, h), 0.42 if w < h else 0.36, SPLASH_BG).convert("RGB").save(path)
+    placed(word, (w, h), 0.5 if w < h else 0.42, CREAM).convert("RGB").save(path)
 
 ios = os.path.join(ROOT, "ios", "App", "App", "Assets.xcassets")
-placed((1024, 1024), 0.80, (255, 255, 255, 255)).convert("RGB").save(
-    os.path.join(ios, "AppIcon.appiconset", "AppIcon-512@2x.png"))       # App Store requires no transparency
+icon.save(os.path.join(ios, "AppIcon.appiconset", "AppIcon-512@2x.png"))   # App Store requires no transparency
 for path in glob.glob(os.path.join(ios, "Splash.imageset", "*.png")):
     w, h = Image.open(path).size
-    placed((w, h), 0.26, SPLASH_BG).convert("RGB").save(path)
+    placed(word, (w, h), 0.22, CREAM).convert("RGB").save(path)
+
+icon.resize((512, 512), Image.LANCZOS).save(os.path.join(HERE, "store", "play-icon-512.png"))
 print("icons and splash screens written")

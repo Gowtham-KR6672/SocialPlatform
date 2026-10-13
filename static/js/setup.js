@@ -189,7 +189,7 @@ async function renderSetup(){
           <div><label class="f">Port</label><input class="f" id="sm-port" value="${esc(al.smtp_port||'')}" placeholder="587"></div>
           <div><label class="f">Username</label><input class="f" id="sm-user" value="${esc(al.smtp_user||'')}"></div>
           <div><label class="f">Password ${al.smtp_pass_set?'(set — blank keeps it)':''}</label><input class="f" id="sm-pass" type="password"></div>
-          <div><label class="f">From address</label><input class="f" id="sm-from" value="${esc(al.smtp_from||'')}" placeholder="Social Platform &lt;noreply@…&gt;"></div>
+          <div><label class="f">From address</label><input class="f" id="sm-from" value="${esc(al.smtp_from||'')}" placeholder="SoLo &lt;noreply@…&gt;"></div>
         </div></details>`:(al.smtp_configured?'':'<div class="hint">Email delivery needs an SMTP server; your SuperAdmin can set one up.</div>')}
       <div class="row" style="gap:8px;margin-top:10px">
         <button class="btn sm grad-btn" id="al-save">${ic('save',14)} Save</button>
