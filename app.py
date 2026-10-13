@@ -1376,11 +1376,10 @@ def subscription_active(u):
 
 
 def can_view_creds(u):
-    """The AI connection + settings (API key, model, redirect base) and the
-    OAuth app credentials are SuperAdmin-ONLY. Regular users never see or edit
-    them — they simply USE the AI features with the key the SuperAdmin has
-    configured. This gate hides the credentials UI and blocks the write/test
-    endpoints for anyone who is not the SuperAdmin."""
+    """The platform credentials (the platform AI, redirect base, OAuth apps) are
+    SuperAdmin-ONLY. Workspace admins manage their own workspace's AI separately
+    (can_manage_ai); everyone else simply USES the AI features. This gate hides the
+    credentials UI and blocks the write/test endpoints for anyone who is not the SuperAdmin."""
     return is_super(u)
 
 
@@ -3565,16 +3564,17 @@ def _run_generation(cid, video_path, original_name, user_id="", frames=None):
     GEN_JOBS[cid] = {"status": "running", "percent": 5, "message": "Preparing…"}
     task_update(tid, percent=5, message="Preparing…")
     try:
-        kit = None
+        kit, ws = None, None
         try:
             _db = db_connect()
             _r = _db.execute("SELECT owner_id, brand_id FROM calendar_items WHERE id=?", (cid,)).fetchone()
             kit = kit_for_owner(_db, _r["owner_id"], _r["brand_id"]) if _r else None
+            ws = ai_ws_of_uid(_db, _r["owner_id"] if _r else user_id)   # the post's workspace AI
             _db.close()
         except Exception:
             kit = None
         title, cap, tags, desc, note = generate_caption(video_path, original_name, progress=_prog, kit=kit,
-                                                         frames=frames)
+                                                         frames=frames, ws=ws)
         db = db_connect()
         db.execute("UPDATE calendar_items SET title=?, caption=?, hashtags=? WHERE id=?",
                    (title or original_name, cap, tags, cid))
@@ -4727,11 +4727,11 @@ def _rule_adapt(caption, hashtags, platform):
     return (body + ("\n\n" + tag_str if tag_str else "")).strip()
 
 
-def adapt_captions(row, plats, kit=None):
+def adapt_captions(row, plats, kit=None, ws=None):
     caption, hashtags = (row["caption"] or ""), (row["hashtags"] or "")
     if kit and (kit.get("default_hashtags") or "").strip():
         hashtags = " ".join(_merge_hashtags(kit["default_hashtags"], hashtags, cap=30))
-    key, model = _claude_creds()
+    key, model = _claude_creds(ws)
     result, source = {}, "rules"
     if key and (caption or hashtags):
         spec_lines = "\n".join(f'- "{p}": {PLATFORM_STYLE[p]} (hard limit {P.PLATFORMS[p]["caption_max"]} chars)'
@@ -4765,8 +4765,8 @@ def adapt_captions(row, plats, kit=None):
     return result, source
 
 
-def suggest_replies(comment_text, post_title, platform, kit=None):
-    key, model = _claude_creds()
+def suggest_replies(comment_text, post_title, platform, kit=None, ws=None):
+    key, model = _claude_creds(ws)
     sent = _sentiment(comment_text)
     if key:
         prompt = (f'You manage a brand\'s {P.PLATFORMS[platform]["label"]} account. A follower commented on the '
@@ -5328,7 +5328,8 @@ def _ollama_text(prompt, model):
 
 # --------------------------------------------------------------------------- #
 #  AI providers (V35): Anthropic Claude, Google Gemini, Groq and OpenRouter.
-#  The SuperAdmin picks one in Setup; every AI feature (content writing,
+#  Each workspace admin picks one in Setup for their workspace (V45; the SuperAdmin's
+#  choice is the platform AI, see ai_creds); every AI feature (content writing,
 #  video captions, per-platform captions, reply suggestions, hashtags) uses it.
 #  Each provider keeps its own key (encrypted: *_api_key) and model.
 # --------------------------------------------------------------------------- #
@@ -5360,17 +5361,101 @@ def _ai_key(value, provider):
     return k
 
 
-def ai_provider_of(db):
-    p = (get_setting(db, "ai_provider") or "claude").strip()
-    return p if p in AI_PROVIDERS else "claude"
+# ---- Whose AI (V45) --------------------------------------------------------
+# Each workspace admin connects the workspace's own AI provider in Setup (stored per
+# workspace: u<ws>_ai_provider, u<ws>_<provider>_api_key, u<ws>_<provider>_model).
+# The SuperAdmin's settings are the PLATFORM AI: used by the SuperAdmin's own workspace
+# and, while "share with workspaces" is on (the default), by workspaces that haven't
+# connected their own. ws=None below means the platform settings.
+def can_manage_ai(u):
+    """The SuperAdmin (platform AI) and each workspace admin (their workspace's AI)."""
+    return bool(u) and (is_super(u) or is_primary_user(u))
 
 
-def ai_creds(db, provider=None):
-    """(key, model) for the chosen provider (or the one given)."""
-    p = provider if provider in AI_PROVIDERS else ai_provider_of(db)
+def ai_ws_of(u):
+    """Workspace whose AI a login uses and manages; None for the SuperAdmin (platform AI)."""
+    if not u or is_super(u):
+        return None
+    return billing_user_id(u)
+
+
+def ai_ws_of_uid(db, uid):
+    """ai_ws_of for a user id (a post's owner), for work that runs outside a request."""
+    if not uid:
+        return None
+    row = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    return ai_ws_of(row) if row else None
+
+
+def ai_platform_shared(db):
+    return get_setting(db, "ai_platform_shared") != "0"
+
+
+def _ai_get(db, ws, key):
+    return uget_setting(db, ws, key) if ws else get_setting(db, key)
+
+
+def _ai_set(db, ws, key, value):
+    return uset_setting(db, ws, key, value) if ws else set_setting(db, key, value)
+
+
+def _ws_ai_own(db, ws):
+    """(provider, key, model) a workspace connected itself, or None."""
+    if not ws:
+        return None
+    p = (uget_setting(db, ws, "ai_provider") or "").strip()
+    key = uget_setting(db, ws, f"{p}_api_key") if p in AI_PROVIDERS else ""
+    return (p, key, uget_setting(db, ws, f"{p}_model") or "") if key else None
+
+
+def _platform_ai(db, provider=None):
+    p = provider if provider in AI_PROVIDERS else (get_setting(db, "ai_provider") or "claude").strip()
+    p = p if p in AI_PROVIDERS else "claude"
     key = get_setting(db, f"{p}_api_key") or os.environ.get(AI_PROVIDERS[p]["env"], "").strip()
-    model = get_setting(db, f"{p}_model") or ""        # blank = pick automatically (_auto_model)
+    return p, key, get_setting(db, f"{p}_model") or ""   # blank model = pick automatically (_auto_model)
+
+
+def ai_provider_of(db, ws=None):
+    own = _ws_ai_own(db, ws)
+    return own[0] if own else _platform_ai(db)[0]
+
+
+def ai_creds(db, provider=None, ws=None):
+    """(key, model) the AI features use: the workspace's own AI when it connected one,
+    otherwise the platform AI (for a workspace: only while it is shared). The key is
+    empty when no AI is available."""
+    own = _ws_ai_own(db, ws)
+    if own and provider in (None, own[0]):
+        return _ai_key(own[1], own[0]), own[2]
+    p, key, model = _platform_ai(db, provider)
+    if ws and not ai_platform_shared(db):
+        key = ""
     return _ai_key(key, p), model
+
+
+def ai_saved_creds(db, provider, ws=None):
+    """(key, model) saved for one provider at one level (Setup's test / model list),
+    never mixing a workspace with the platform."""
+    if ws:
+        return _ai_key(uget_setting(db, ws, f"{provider}_api_key"), provider), uget_setting(db, ws, f"{provider}_model") or ""
+    _, key, model = _platform_ai(db, provider)
+    return _ai_key(key, provider), model
+
+
+def ai_using(db, ws):
+    """Which AI a workspace's features use: "own", "platform" or "none"."""
+    if _ws_ai_own(db, ws):
+        return "own"
+    return "platform" if (ai_platform_shared(db) and _platform_ai(db)[1]) else "none"
+
+
+def _ai_missing_text(u=None):
+    """What to do when no AI is connected, worded for who is asking."""
+    if u and is_super(u):
+        return "The AI isn't set up yet. Choose an AI provider and add its key in Setup → Credentials."
+    if u and can_manage_ai(u):
+        return "The AI isn't set up yet. Choose an AI provider and add its key in Setup → AI provider."
+    return "The AI isn't set up yet. Ask your workspace admin to connect an AI provider in Setup."
 
 
 def _ai_error_text(e):
@@ -5415,16 +5500,21 @@ def _ai_request(url, headers, payload=None, timeout=300):
 _AI_LIST_CACHE = {}
 
 
+def _ai_ck(p, key):
+    """Cache key for one provider + API key: workspaces' keys can see different models."""
+    return f"{p}:{hashlib.sha256(str(key or '').encode()).hexdigest()[:12]}"
+
+
 def _cached_models(p, key):
     """_list_ai_models, cached for 6 hours (None when the list can't be fetched)."""
-    hit = _AI_LIST_CACHE.get(p)
+    hit = _AI_LIST_CACHE.get(_ai_ck(p, key))
     if hit and time.time() - hit[0] < 6 * 3600:
         return hit[1]
     try:
         models = _list_ai_models(p, key)
     except Exception:
         return None
-    _AI_LIST_CACHE[p] = (time.time(), models)
+    _AI_LIST_CACHE[_ai_ck(p, key)] = (time.time(), models)
     return models
 
 
@@ -5617,7 +5707,7 @@ def _auto_model(p, key, vision=False):
 def _auto_models(p, key, vision=False):
     """Best automatic choices, best first (used as fallbacks on OpenRouter). Cached 6 hours."""
     default = AI_PROVIDERS[p]["default"]
-    ck = p + (":vision" if vision else "")
+    ck = _ai_ck(p, key) + (":vision" if vision else "")
     hit = _AI_MODEL_CACHE.get(ck)
     if hit and time.time() - hit[0] < 6 * 3600:
         return hit[2][:3]
@@ -5641,7 +5731,7 @@ def _auto_models(p, key, vision=False):
 def _ranked_models(p, key, vision=False):
     """Every usable model for a provider, best first (vision=True: only ones that read images)."""
     _auto_models(p, key, vision)
-    hit = _AI_MODEL_CACHE.get(p + (":vision" if vision else ""))
+    hit = _AI_MODEL_CACHE.get(_ai_ck(p, key) + (":vision" if vision else ""))
     return list(hit[2]) if hit else []
 
 
@@ -5650,64 +5740,85 @@ def _claude_generate(prompt, api_key, model, provider=None):
     return _ai_complete(provider or getattr(api_key, "provider", "claude"), api_key, model, prompt)
 
 
-def _save_ai_settings(db, d):
-    """Store the provider choice and any per-provider key/model that was posted.
-    A blank key keeps the saved one."""
+def _save_ai_settings(db, d, ws=None):
+    """Store the provider choice and any per-provider key/model that was posted, for the
+    platform (ws=None) or one workspace. A blank key keeps the saved one;
+    "remove_key": <provider> deletes that provider's saved key."""
     if (d.get("ai_provider") or "") in AI_PROVIDERS:
-        set_setting(db, "ai_provider", d["ai_provider"])
+        _ai_set(db, ws, "ai_provider", d["ai_provider"])
     for p in AI_PROVIDERS:
         if f"{p}_model" in d:
-            set_setting(db, f"{p}_model", (d.get(f"{p}_model") or "").strip())
+            _ai_set(db, ws, f"{p}_model", (d.get(f"{p}_model") or "").strip())
         if (d.get(f"{p}_api_key") or "").strip():
-            set_setting(db, f"{p}_api_key", d[f"{p}_api_key"].strip())
+            _ai_set(db, ws, f"{p}_api_key", d[f"{p}_api_key"].strip())
+    if d.get("remove_key") in AI_PROVIDERS:
+        _ai_set(db, ws, f"{d['remove_key']}_api_key", "")
+    if ws is None and "ai_platform_shared" in d:
+        set_setting(db, "ai_platform_shared", "1" if d.get("ai_platform_shared") else "0")
 
 
-def ai_settings_payload(db):
-    cur = ai_provider_of(db)
-    return {"provider": cur, "providers": [
-        {"id": p, "label": m["label"], "model": get_setting(db, f"{p}_model") or "",
-         "default_model": (_AI_MODEL_CACHE.get(p) or (0, m["default"], []))[1],
-         "key_set": bool(get_setting(db, f"{p}_api_key") or os.environ.get(m["env"], "").strip())}
-        for p, m in AI_PROVIDERS.items()]}
+def ai_settings_payload(db, ws=None):
+    """The AI picker's data for the platform (ws=None) or one workspace. Never the keys."""
+    sel = (_ai_get(db, ws, "ai_provider") or "").strip()
+    if sel not in AI_PROVIDERS:
+        sel = _platform_ai(db)[0] if not ws else "gemini"   # a new workspace starts on the free option
+    out = {"provider": sel, "scope": "workspace" if ws else "platform", "providers": []}
+    for p, m in AI_PROVIDERS.items():
+        key, model = ai_saved_creds(db, p, ws)
+        cached = _AI_MODEL_CACHE.get(_ai_ck(p, key)) if key else None
+        out["providers"].append({"id": p, "label": m["label"], "model": model,
+                                 "default_model": (cached or (0, m["default"], []))[1], "key_set": bool(key)})
+    if ws:
+        out["using"] = ai_using(db, ws)
+        out["platform_shared"] = ai_platform_shared(db) and bool(_platform_ai(db)[1])
+    else:
+        out["shared"] = ai_platform_shared(db)
+    return out
 
 
 @app.route("/api/settings/content", methods=["GET", "POST"])
 def api_content_settings():
     u = require_login()
     db = get_db()
+    ws = ai_ws_of(u)
     if request.method == "POST":
-        # Only credential-holders may set the API key / model / guidelines.
-        if not can_view_creds(u):
-            return jsonify({"error": "Only the SuperAdmin can change AI credentials."}), 403
+        # The SuperAdmin sets the platform AI; each workspace admin sets their workspace's.
+        if not can_manage_ai(u):
+            return jsonify({"error": "Only your workspace admin can change the AI settings."}), 403
         d = request.get_json(force=True)
-        _save_ai_settings(db, d)
-        if "content_guidelines" in d:
+        _save_ai_settings(db, d, ws)
+        if "content_guidelines" in d and can_view_creds(u):      # guidelines stay platform-wide
             set_setting(db, "content_guidelines", (d.get("content_guidelines") or "").strip())
+        if ws:
+            log_activity(db, u, "ai_settings", "workspace", ws, ai_using(db, ws))
         return jsonify({"ok": True})
-    key, model = ai_creds(db)
+    key, model = ai_creds(db, ws=ws)
     return jsonify({
         "content_provider": key.provider,
         "claude_model": model or "automatic",  # (legacy field names: the ACTIVE provider's model/key)
         "claude_key_set": bool(key),
         "ai_label": AI_PROVIDERS[key.provider]["label"],
-        "ai": ai_settings_payload(db) if can_view_creds(u) else None,
+        "ai": ai_settings_payload(db, ws) if can_manage_ai(u) else None,
         "can_view_creds": can_view_creds(u),
+        "can_manage_ai": can_manage_ai(u),
     })
 
 
 @app.route("/api/settings/content/test", methods=["POST"])
 def api_content_test():
-    """Check an AI provider's key/model with a tiny request. Credential-holders
-    only. A supplied key is used just for this test (not saved). Never returns the key."""
+    """Check an AI provider's key/model with a tiny request (the SuperAdmin for the
+    platform, a workspace admin for their workspace). A supplied key is used just for
+    this test (not saved). Never returns the key."""
     u = require_login()
-    if not can_view_creds(u):
-        return jsonify({"ok": False, "message": "Only the SuperAdmin can test AI credentials."}), 403
+    if not can_manage_ai(u):
+        return jsonify({"ok": False, "message": "Only your workspace admin can test the AI settings."}), 403
     db = get_db()
+    ws = ai_ws_of(u)
     d = request.get_json(silent=True) or {}
-    provider = d.get("provider") or ai_provider_of(db)
+    provider = d.get("provider") or ai_provider_of(db, ws)
     if provider not in AI_PROVIDERS:
         return jsonify({"ok": False, "message": "Unknown AI provider."})
-    saved_key, saved_model = ai_creds(db, provider)
+    saved_key, saved_model = ai_saved_creds(db, provider, ws)
     key = (d.get("api_key") or d.get("claude_api_key") or "").strip() or saved_key
     if not key:
         return jsonify({"ok": False, "message": "No API key provided."})
@@ -5723,14 +5834,15 @@ def api_content_test():
 def api_ai_models():
     """List the models a provider offers (OpenRouter marks its free ones)."""
     u = require_login()
-    if not can_view_creds(u):
-        return jsonify({"error": "Only the SuperAdmin can manage AI settings."}), 403
+    if not can_manage_ai(u):
+        return jsonify({"error": "Only your workspace admin can manage the AI settings."}), 403
     db = get_db()
+    ws = ai_ws_of(u)
     d = request.get_json(silent=True) or {}
-    p = d.get("provider") or ai_provider_of(db)
+    p = d.get("provider") or ai_provider_of(db, ws)
     if p not in AI_PROVIDERS:
         return jsonify({"error": "Unknown AI provider."}), 400
-    key = (d.get("api_key") or "").strip() or ai_creds(db, p)[0]
+    key = (d.get("api_key") or "").strip() or ai_saved_creds(db, p, ws)[0]
     try:
         out = _list_ai_models(p, key)
     except Exception as e:  # noqa
@@ -6114,11 +6226,10 @@ def api_content_generate():
     if not title:
         return jsonify({"error": "Enter a title."}), 400
     db = get_db()
-    # Generation uses the AI provider the SuperAdmin chose in Setup.
-    key, model = ai_creds(db)
+    # Generation uses the workspace's AI (or the platform AI when the workspace has none).
+    key, model = ai_creds(db, ws=ai_ws_of(u))
     if not key:
-        return jsonify({"error": "The AI isn't set up yet. Ask your SuperAdmin to choose an AI "
-                                 "provider and add its key in Setup → Credentials."}), 400
+        return jsonify({"error": _ai_missing_text(u)}), 400
     guidelines = "\n".join(x for x in (get_setting(db, "content_guidelines") or "",
                                        kit_prompt(kit_for_owner(db, u["id"], _rget(u, "active_brand_id")))) if x)
     job_id = "content_" + secrets.token_hex(4)
@@ -6520,15 +6631,15 @@ def _vision_model():
     return cfg if _is_vision_model(cfg) else OLLAMA_MODEL
 
 
-def _claude_creds():
-    """(key, model) of the chosen AI provider from app settings or env — safe off-request."""
+def _claude_creds(ws=None):
+    """(key, model) of the AI a workspace uses (ws=None: the platform AI) — safe off-request."""
     try:
         db = db_connect()
-        key, model = ai_creds(db)
+        key, model = ai_creds(db, ws=ws)
         db.close()
         return key, model
     except Exception:
-        return _ai_key(CLAUDE_API_KEY_ENV, "claude"), DEFAULT_CLAUDE_MODEL
+        return _ai_key(CLAUDE_API_KEY_ENV if not ws else "", "claude"), DEFAULT_CLAUDE_MODEL
 
 
 VIDEO_MIME = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm",
@@ -6536,14 +6647,14 @@ VIDEO_MIME = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime
 GEMINI_INLINE_MAX = 14 * 1024 * 1024      # request limit is 20 MB after base64 (+33%)
 
 
-def ai_analyse_media(frames, guidelines="", video_path=None):
+def ai_analyse_media(frames, guidelines="", video_path=None, ws=None):
     """Look at a post's media with the chosen AI provider and write its title,
     caption, description and hashtags. Gemini gets the whole video (picture and
     sound) when it's small enough; other providers get frames sampled from it.
     Returns a dict, or raises RuntimeError with the reason."""
-    key, model = _claude_creds()
+    key, model = _claude_creds(ws)
     if not key:
-        raise RuntimeError("No AI provider is set up yet (Setup → Credentials → AI provider).")
+        raise RuntimeError("No AI provider is set up yet for this workspace (Setup → AI provider).")
     video = None
     if key.provider == "gemini" and video_path and os.path.exists(video_path):
         ext = os.path.splitext(video_path)[1].lower()
@@ -6591,7 +6702,7 @@ def ai_analyse_media(frames, guidelines="", video_path=None):
     return out
 
 
-def generate_caption(video_path, original_name, progress=None, kit=None, frames=None):
+def generate_caption(video_path, original_name, progress=None, kit=None, frames=None, ws=None):
     """
     Return (title, caption, hashtags, description, note). The chosen AI provider
     looks at the REAL media — frames captured by the browser, frames sampled with
@@ -6622,7 +6733,7 @@ def generate_caption(video_path, original_name, progress=None, kit=None, frames=
     note = ""
     rep(35, "Analysing the video with AI…")
     try:
-        res = ai_analyse_media(frames, guidelines, video_path)
+        res = ai_analyse_media(frames, guidelines, video_path, ws)
         tags = res["hashtags"]
         if brand_tags:
             tags = " ".join(_merge_hashtags(brand_tags, tags, cap=20))
@@ -7080,9 +7191,11 @@ def api_delete_user(uid):
         if admins <= 1:
             return jsonify({"error": "Can't delete the last admin account."}), 400
     db.execute("DELETE FROM users WHERE id=?", (uid,))
-    # the account's own social sign-ins and push subscriptions go with it
+    # the account's own social sign-ins, push subscriptions and settings (AI keys too) go with it
     db.execute("DELETE FROM social_accounts WHERE user_id=?", (uid,))
     db.execute("DELETE FROM push_subs WHERE user_id=?", (uid,))
+    prefix = f"u{uid}_"
+    db.execute("DELETE FROM settings WHERE substr(key, 1, ?)=?", (len(prefix), prefix))
     db.commit()
     add_notification(db, f'User account "{target["username"]}" was deleted'
                          f'{"" if is_self else " by "+me["username"]}.', "remove", me["username"],
@@ -8539,7 +8652,8 @@ def api_calendar_adapt(cid):
     plats = [p for p in (d.get("platforms") or _item_platforms(row)) if p in SOCIAL]
     if not ((row["caption"] or "").strip() or (row["hashtags"] or "").strip()):
         return jsonify({"error": "Write (or generate) the master caption first."}), 400
-    result, source = adapt_captions(row, plats, kit_for_owner(db, row["owner_id"], row["brand_id"]))
+    result, source = adapt_captions(row, plats, kit_for_owner(db, row["owner_id"], row["brand_id"]),
+                                    ws=ai_ws_of_uid(db, row["owner_id"]))
     yt_title = result.pop("_youtube_title", None)
     pc = _jl(_rget(row, "platform_captions"), {})
     pc.update(result)
@@ -8933,7 +9047,8 @@ def api_inbox_suggest(iid):
     if not c:
         return jsonify({"error": "Not found."}), 404
     reps, source = suggest_replies(c["text"], c["post_title"] or "", c["platform"],
-                                   kit_for_owner(db, c["owner_id"], c["brand_id"]) if c["owner_id"] else None)
+                                   kit_for_owner(db, c["owner_id"], c["brand_id"]) if c["owner_id"] else None,
+                                   ws=ai_ws_of_uid(db, c["owner_id"]) if c["owner_id"] else ai_ws_of(current_user()))
     return jsonify({"replies": reps, "source": source})
 
 

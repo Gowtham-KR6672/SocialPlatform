@@ -16,7 +16,7 @@ async function renderContent(){
 
   c.innerHTML = `<div class="page-head"><h2>Content Writing</h2><div class="spacer"></div>
       ${aiStatus}
-      ${s.can_view_creds?`<button class="btn ghost" id="cwSettings" style="margin-left:10px">${ic('sliders',14)} AI settings</button>`:''}</div>
+      ${s.can_manage_ai?`<button class="btn ghost" id="cwSettings" style="margin-left:10px">${ic('sliders',14)} AI settings</button>`:''}</div>
 
     <div class="cw-input">
       <input class="f" id="cw-title" placeholder="Enter a title, e.g. “5 ways AI is changing real-estate marketing”">
@@ -274,25 +274,27 @@ async function loadContentHistory(){
   }catch(e){ box.innerHTML=''; }
 }
 
-/* AI settings for content (provider, key, model + writing guidelines).
-   Visible only to credential-holders (SuperAdmin or a granted user). */
+/* AI settings for content (provider, key, model; the SuperAdmin also edits the
+   platform-wide writing guidelines). The SuperAdmin edits the platform AI; a
+   workspace admin edits the AI of their own workspace. */
 async function openContentSettings(){
   let s = App._contentSettings || {};
   try{ s = await api('/api/settings/content'); }catch(e){}
-  if(!s.can_view_creds || !s.ai){
-    toast('Only the SuperAdmin can change AI credentials.','warn'); return;
+  if(!s.can_manage_ai || !s.ai){
+    toast('Only your workspace admin can change the AI settings.','warn'); return;
   }
+  const platform = s.ai.scope === 'platform';
   let cfg = {};
-  try{ cfg = await api('/api/oauth/config'); }catch(e){}
+  if(platform){ try{ cfg = await api('/api/oauth/config'); }catch(e){} }
   const m = el(`<div class="modal" style="max-width:760px">
-    <div class="modal-head"><h3>${ic('sparkles',18)} AI settings</h3><button class="x" onclick="closeModal()" aria-label="Close">${ic('x',18)}</button></div>
+    <div class="modal-head"><h3>${ic('sparkles',18)} ${platform?'Platform AI settings':'AI settings for your workspace'}</h3><button class="x" onclick="closeModal()" aria-label="Close">${ic('x',18)}</button></div>
     <div class="modal-body">
       <label class="f">AI provider</label>
       <div id="cs-ai">${aiSettingsHTML(s.ai)}</div>
-      <label class="f">Content-writing guidelines</label>
-      <textarea class="f" id="cs-guide" rows="5" placeholder="Tone, voice, do/don't, brand rules… applied to captions and written content.">${esc(cfg.content_guidelines||'')}</textarea>
+      ${platform?`<label class="f">Content-writing guidelines</label>
+      <textarea class="f" id="cs-guide" rows="5" placeholder="Tone, voice, do/don't, brand rules… applied to captions and written content.">${esc(cfg.content_guidelines||'')}</textarea>`:''}
       <div class="note">Keys are stored encrypted on the server and used only to call the chosen AI provider.
-        Guidelines are applied to Caption &amp; Hashtags and Content Writing. Never paste keys into chat or other public places.</div>
+        ${platform?'Guidelines are applied to Caption &amp; Hashtags and Content Writing. ':'Everyone in your workspace uses this AI. '}Never paste keys into chat or other public places.</div>
       <div class="err" id="cs-err"></div>
     </div>
     <div class="modal-foot">
@@ -301,7 +303,8 @@ async function openContentSettings(){
   openModal(m);
   const ctl = bindAiSettings($('#cs-ai',m), s.ai);
   $('#cs-save',m).onclick = async ()=>{
-    const body = Object.assign(ctl.collect(), {content_guidelines:$('#cs-guide',m).value});
+    const g = $('#cs-guide',m);
+    const body = Object.assign(ctl.collect(), g ? {content_guidelines:g.value} : {});
     try{ await api('/api/settings/content',{method:'POST', body}); toast('AI settings saved','good');
       closeModal(); renderContent(); if(window.loadAiStatus) loadAiStatus(); }
     catch(e){ $('#cs-err',m).textContent=e.message; }

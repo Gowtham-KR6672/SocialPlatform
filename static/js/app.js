@@ -213,7 +213,7 @@ async function loadAiStatus(){
     chip.classList.toggle('ai-on', on);
     chip.classList.toggle('ai-off', !on);
     chip.innerHTML = on ? `${ic('sparkles',14)} AI connected` : `${ic('sparkles',14)} AI off`;
-    chip.title = on ? 'Claude AI is connected' : 'No AI key configured — open Content Writing';
+    chip.title = on ? `AI is connected (${s.ai_label||'AI'})` : 'No AI connected — your workspace admin can connect one in Setup';
   }catch(e){ chip.classList.add('hidden'); }
 }
 window.loadAiStatus = loadAiStatus;

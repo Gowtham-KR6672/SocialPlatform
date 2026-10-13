@@ -58,6 +58,8 @@ async function renderSetup(){
   try{ d = await api('/api/platforms'); }
   catch(e){ $('#setupBody').innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
   if(d.can_view_creds){ try{ cfg = await api('/api/oauth/config'); }catch(e){} }
+  let wsAi = null;                         // workspace admins connect their workspace's own AI
+  if(d.is_ws_admin && !isSuper){ try{ wsAi = (await api('/api/settings/content')).ai; }catch(e){} }
   try{ al = await api('/api/settings/alerts'); }catch(e){}
 
   const credCard = d.can_view_creds ? `
@@ -71,9 +73,13 @@ async function renderSetup(){
           <input class="f" id="sc-public" value="${esc(al.public_base_url||'')}" placeholder="https://your-app.com">
           <div class="hint">${d.supabase_storage?'Cloud storage (S3 or Supabase) is on, so media already has public URLs.':'Instagram and Threads download media from here (HTTPS only).'}</div></div>
       </div>
-      <div class="sc-sub">${ic('sparkles',15)} <b>AI provider</b>
-        <span class="muted">Used for captions, content writing, per-platform captions and reply suggestions.</span></div>
+      <div class="sc-sub">${ic('sparkles',15)} <b>Platform AI provider</b>
+        <span class="muted">Used for captions, content writing, per-platform captions and reply suggestions in your workspace.
+          Each workspace admin can connect their own AI in Setup.</span></div>
       <div id="sc-ai">${cfg.ai?aiSettingsHTML(cfg.ai):''}</div>
+      ${cfg.ai?`<label class="chk ai-share"><input type="checkbox" id="sc-aishare" ${cfg.ai.shared?'checked':''}>
+        <span>Let workspaces that haven't connected their own AI use this one
+          <span class="muted">(their usage is charged to this key)</span></span></label>`:''}
       <button class="btn sm grad-btn" id="sc-savecred">${ic('save',14)} Save credentials</button>
       <div class="err" id="sc-crederr"></div>
       <details class="smtp review-urls"><summary>${ic('shield',14)} URLs for App Review &amp; webhooks (Meta, Google, TikTok…)</summary>
@@ -117,6 +123,23 @@ async function renderSetup(){
     return `<span class="chip gold">Not available yet</span>`;
   };
   const locked = !!d.social_locked;
+  const aiUsing = wsAi ? ({
+      own: `${ic('check',13)} Your workspace uses its own AI key.`,
+      platform: `${ic('building',13)} Using the platform's AI for now. Connect your own provider to use your own key and limits.`,
+      none: `${ic('alert',13)} No AI connected yet. Captions, content writing and reply suggestions need one.`,
+    })[wsAi.using] || '' : '';
+  const aiCard = wsAi ? `
+    <div class="card glass setup-card" id="wsAiCard">
+      <div class="sc-title">${ic('sparkles',16)} <b>AI provider for your workspace</b></div>
+      <p class="sub" style="margin:4px 0 10px">Used for captions, content writing, per-platform captions and reply suggestions
+        by everyone in your workspace. The key is stored encrypted and is never shown again.</p>
+      <div class="ai-using ${wsAi.using}">${aiUsing}</div>
+      <div id="ws-ai">${aiSettingsHTML(wsAi)}</div>
+      <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
+        <button class="btn sm grad-btn" id="wsAiSave">${ic('save',14)} Save AI settings</button>
+        <button class="btn ghost sm hidden" id="wsAiRemove">${ic('trash',14)} Remove this key</button></div>
+      <div class="err" id="wsAiErr"></div>
+    </div>` : '';
   const modeCard = (d.is_ws_admin && !isSuper) ? `
     <div class="card glass setup-card" id="modeCard">
       <div class="sc-title">${ic('users',16)} <b>How social accounts are connected in your workspace</b></div>
@@ -185,8 +208,30 @@ async function renderSetup(){
     </div>`;
   if(!$('#setupBody')) return;          // user left the page while it was loading
   const lrHost = ((App.user||{}).loans_enabled && !(App.user||{}).is_subuser) ? '<div id="lrChannels"></div>' : '';
-  $('#setupBody').innerHTML = credCard + modeCard + lockNote + `<div class="pf-tiles">${rows}</div>` + lrHost + alertsCard + signupCard;
+  $('#setupBody').innerHTML = credCard + aiCard + modeCard + lockNote + `<div class="pf-tiles">${rows}</div>` + lrHost + alertsCard + signupCard;
   if(lrHost && typeof renderLoanChannels==='function') renderLoanChannels($('#lrChannels'));
+  if(wsAi && $('#ws-ai')){
+    const ctl = bindAiSettings($('#ws-ai'), wsAi);
+    const rm = $('#wsAiRemove');
+    const syncRemove = ()=>{ const p = wsAi.providers.find(x=>x.id===ctl.selected()); rm.classList.toggle('hidden', !(p && p.key_set)); };
+    $('#ws-ai').addEventListener('click', e=>{ if(e.target.closest('.ai-prov')) syncRemove(); });
+    syncRemove();
+    $('#wsAiSave').onclick = async ()=>{
+      $('#wsAiErr').textContent = '';
+      if(!ctl.hasKey()){ $('#wsAiErr').textContent = 'Paste the API key for this provider first.'; return; }
+      try{ await api('/api/settings/content',{method:'POST', body:ctl.collect()});
+        toast('AI settings saved for your workspace','good'); if(window.loadAiStatus) loadAiStatus(); renderSetup(); }
+      catch(e){ $('#wsAiErr').textContent = e.message; }
+    };
+    rm.onclick = ()=>{
+      const p = wsAi.providers.find(x=>x.id===ctl.selected()); if(!p) return;
+      confirmBox('Remove this AI key?', `Your workspace stops using its ${p.label} key.`
+        + (wsAi.platform_shared ? ' It will use the platform\'s AI instead.' : ' AI features stay off until you connect a provider again.'),
+        async ()=>{ try{ await api('/api/settings/content',{method:'POST', body:{remove_key:p.id}});
+            toast('AI key removed','good'); if(window.loadAiStatus) loadAiStatus(); renderSetup(); }
+          catch(e){ toast(e.message,'warn'); } }, 'Remove key');
+    };
+  }
   const ms = $('#modeSave');
   if(ms) ms.onclick = async ()=>{
     const mode = (document.querySelector('#modeCard [name=wsmode]:checked')||{}).value;
@@ -201,7 +246,9 @@ async function renderSetup(){
   const aiCtl = (cfg.ai && $('#sc-ai')) ? bindAiSettings($('#sc-ai'), cfg.ai) : null;
   const scb = $('#sc-savecred');
   if(scb) scb.onclick = async ()=>{
-    const body = Object.assign({oauth_redirect_base:$('#sc-redirect').value.trim()}, aiCtl ? aiCtl.collect() : {});
+    const share = $('#sc-aishare');
+    const body = Object.assign({oauth_redirect_base:$('#sc-redirect').value.trim()}, aiCtl ? aiCtl.collect() : {},
+                               share ? {ai_platform_shared: share.checked} : {});
     try{ await api('/api/oauth/config',{method:'POST', body});
       await api('/api/settings/alerts',{method:'POST', body:{public_base_url:$('#sc-public').value.trim()}});
       toast('Credentials saved','good'); renderSetup(); }
@@ -276,7 +323,7 @@ function aiSettingsHTML(ai){
       return `<button type="button" role="radio" class="ai-prov" data-prov="${p.id}" aria-checked="false">
         <span class="ap-top"><b>${esc(p.label)}</b><span class="ap-badge ${M.tone||''}">${esc(M.badge||'')}</span></span>
         <span class="ap-note">${esc(M.note||'')}</span>
-        <span class="ap-state">${p.key_set?`${ic('check',12)} Key saved`:'No key yet'}${p.id===ai.provider?' · <b>In use</b>':''}</span></button>`; }).join('')}</div>
+        <span class="ap-state">${p.key_set?`${ic('check',12)} Key saved`:'No key yet'}${p.id===ai.provider?(p.key_set?' · <b>In use</b>':' · <b>Selected</b>'):''}</span></button>`; }).join('')}</div>
     <div class="ai-fields">
       <div><label class="f" for="ai-key">API key <span class="muted ai-keystate"></span>
           <a class="ai-keylink" target="_blank" rel="noopener">Get a key ${ic('external',11)}</a></label>
